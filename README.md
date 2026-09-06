@@ -44,6 +44,8 @@ Routes are played through a small vehicle model rather than replayed point by po
 
 See [SETUP.md](SETUP.md) for full steps. Grab a prebuilt IPA from [Releases](https://github.com/ChrisMack32/Locus/releases), or build from source below.
 
+Every push to `main` publishes an unsigned IPA as a pre-release; tagging `v*` publishes a versioned one. CI fails the build if `LocusTunnel.appex` is missing from the IPA, so a release can't silently ship without the built-in tunnel.
+
 Bundle ID: `com.chrismack.locus`
 
 ### LiveContainer
@@ -97,6 +99,8 @@ Building from source needs an Apple Developer account for code signing. The publ
 > **Network Extension capability.** The built-in tunnel is a packet-tunnel extension, and Apple only grants `packet-tunnel-provider` to **paid** developer accounts. With a free Apple ID the `LocusTunnel` target won't sign; drop it from `project.yml` (remove the target and the app's `dependencies` entry) and Locus falls back to the LocalDevVPN app at runtime — `TunnelController` detects the missing `.appex` and says so.
 >
 > The App Group `group.com.chrismack.locus` is only used for the tunnel's diagnostic log. If it isn't provisioned, the log is empty and Settings says why; nothing else changes.
+
+`project.yml` is the source of truth. The committed `Locus.xcodeproj` is generated from it and goes stale whenever a target moves — **always run `xcodegen generate` before opening it**, or you'll build a project without the `LocusTunnel` extension. CI regenerates it on every run for the same reason.
 
 1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) if needed: `brew install xcodegen`
 2. Set your **Team ID** in `project.yml` (`DEVELOPMENT_TEAM`), *or* pick your team under Xcode → Signing & Capabilities after generating the project.

@@ -1,0 +1,165 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  # Superseded PR builds are worth cancelling; a release build in flight is not.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    # macOS 26 for the iOS 26 SDK. Liquid Glass (`glassEffect`,
+    # `GlassEffectContainer`) sits behind `#available` guards, but the symbols
+    # still have to exist at build time — an Xcode 16 runner fails outright
+    # rather than falling back.
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install build tools
+        run: brew install xcodegen xcbeautify
+
+      # project.yml is the source of truth; the committed Locus.xcodeproj is a
+      # generated artifact that goes stale whenever a target or file moves.
+      # Regenerating here means CI can never build a project that doesn't match
+      # the repo — in particular one missing the LocusTunnel extension.
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Read version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(awk '/MARKETING_VERSION:/ { gsub(/[":]/, "", $2); print $2; exit }' project.yml)
+          echo "version=${VERSION:-0.0.0}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      # Unsigned: this IPA is re-signed locally with AltStore / SideStore /
+      # Feather / Sideloadly / ESign before installing. Entitlements aren't
+      # applied to an unsigned build, which is exactly why the app reads its own
+      # embedded.mobileprovision at runtime rather than assuming it has them.
+      - name: Archive (unsigned, device SDK)
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Locus.xcodeproj \
+            -scheme Locus \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath build/Locus.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            SKIP_INSTALL=NO \
+            | xcbeautify
+
+      - name: Package unsigned .ipa
+        run: |
+          set -euo pipefail
+          APP="build/Locus.xcarchive/Products/Applications/Locus.app"
+          test -d "$APP" || { echo "::error::No Locus.app in the archive"; exit 1; }
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry Locus-unsigned.ipa Payload
+          ls -lh Locus-unsigned.ipa
+
+      # The whole built-in-tunnel feature is one bundle deep. If a build setting
+      # ever drops the extension, the app degrades to "use LocalDevVPN" — correct
+      # behaviour, but not something a release should ship without anyone
+      # noticing. So CI fails here instead of shipping it quietly.
+      - name: Verify the .ipa
+        run: |
+          set -euo pipefail
+          unzip -t Locus-unsigned.ipa > /dev/null
+          echo "Archive is a valid zip."
+
+          CONTENTS=$(unzip -l Locus-unsigned.ipa)
+
+          grep -q "Payload/Locus.app/Locus$" <<< "$CONTENTS" \
+            || { echo "::error::App binary missing from the IPA"; exit 1; }
+
+          grep -q "Payload/Locus.app/PlugIns/LocusTunnel.appex/LocusTunnel$" <<< "$CONTENTS" \
+            || { echo "::error::LocusTunnel.appex missing — this build would have no built-in tunnel"; exit 1; }
+
+          echo "App binary and tunnel extension both present."
+
+          # The extension is useless without its packet-tunnel extension point.
+          PLIST="Payload/Locus.app/PlugIns/LocusTunnel.appex/Info.plist"
+          unzip -o -q Locus-unsigned.ipa "$PLIST" -d verify
+          POINT=$(/usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" "verify/$PLIST")
+          test "$POINT" = "com.apple.networkextension.packet-tunnel" \
+            || { echo "::error::Extension point is '$POINT', expected com.apple.networkextension.packet-tunnel"; exit 1; }
+          echo "Extension point: $POINT"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Locus-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}-unsigned
+          path: Locus-unsigned.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Write release notes
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+        run: |
+          cat > release-notes.md <<EOF
+          Unsigned build of \`${SHORT_SHA}\`. Re-sign locally before installing — AltStore, SideStore, Feather, Sideloadly or ESign.
+
+          **About the built-in tunnel.** Signing it needs a **paid** Apple developer account: Apple doesn't grant \`packet-tunnel-provider\` to free ones. Re-signed with a free profile, Locus detects that at launch and points you at the [LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) app instead — it raises the same tunnel on 10.7.0.1 and everything else works the same.
+
+          Download \`Locus-unsigned.ipa\` directly below — no extra .zip wrapper.
+          EOF
+
+      # actions/upload-artifact always wraps its output in a second .zip for
+      # browser downloads. A Release attaches the .ipa directly — one download,
+      # one file, openable straight from the link on the phone.
+      - name: Publish as a GitHub Release
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          # Two explicit calls rather than building up an argument array: macOS
+          # still ships bash 3.2, where expanding an empty array under `set -u`
+          # is an unbound-variable error.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            gh release create "$TAG" Locus-unsigned.ipa \
+              --title "Locus $TAG" \
+              --notes-file release-notes.md \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            TAG="build-$(date -u +%Y%m%d%H%M%S)-${SHORT_SHA}"
+            gh release create "$TAG" Locus-unsigned.ipa \
+              --title "Locus ${VERSION} build (${SHORT_SHA})" \
+              --notes-file release-notes.md \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease
+          fi
