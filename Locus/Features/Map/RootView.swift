@@ -106,12 +106,16 @@ struct StatusBarView: View {
 
     @State private var loopbackUp = TunnelController.loopbackReachable
     @State private var isConnecting = false
+    @State private var troubleBlocker: TunnelBlocker?
 
     private enum Display {
         case spoof(String)
         case ready
         case tunnelAction(String)
         case tunnelBusy(String)
+        /// The built-in tunnel can never work on this build — sideloaded without
+        /// the entitlement, or in LiveContainer. Says so, and offers the way out.
+        case tunnelBlocked(TunnelBlocker)
         case tunnelProblem(String)
     }
 
@@ -133,8 +137,8 @@ struct StatusBarView: View {
             return .tunnelBusy("Starting tunnel…")
         case .failed(let reason):
             return .tunnelProblem(reason)
-        case .unavailable:
-            return .tunnelAction("Connect LocalDevVPN")
+        case .unavailable(let blocker):
+            return .tunnelBlocked(blocker)
         case .idle, .connected:
             return isConnecting
                 ? .tunnelBusy("Starting tunnel…")
@@ -148,6 +152,7 @@ struct StatusBarView: View {
         case .ready: return "Not Spoofing"
         case .tunnelAction(let text): return text
         case .tunnelBusy(let text): return text
+        case .tunnelBlocked(let blocker): return blocker.shortTitle
         case .tunnelProblem: return "Tunnel didn’t connect"
         }
     }
@@ -155,7 +160,7 @@ struct StatusBarView: View {
     private var color: Color {
         switch display {
         case .ready: return Color.primary.opacity(0.55)
-        case .tunnelAction, .tunnelBusy: return LocusTheme.statusWarn
+        case .tunnelAction, .tunnelBusy, .tunnelBlocked: return LocusTheme.statusWarn
         case .tunnelProblem: return LocusTheme.statusBad
         case .spoof:
             switch session.status {
@@ -169,7 +174,7 @@ struct StatusBarView: View {
 
     private var isTappable: Bool {
         switch display {
-        case .tunnelAction, .tunnelProblem: return true
+        case .tunnelAction, .tunnelProblem, .tunnelBlocked: return true
         default: return false
         }
     }
@@ -192,11 +197,22 @@ struct StatusBarView: View {
             // Covers a tunnel raised by LocalDevVPN as well as our own.
             refresh()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .locusShowTunnelTrouble)) { note in
+            // A teleport or route hit the missing tunnel — explain it here rather
+            // than leaving an alert that only says what failed.
+            guard let blocker = note.object as? TunnelBlocker else { return }
+            troubleBlocker = blocker
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 refresh()
+            }
+        }
+        .sheet(item: $troubleBlocker) { blocker in
+            TunnelTroubleView(blocker: blocker) {
+                startBuiltInTunnel()
             }
         }
     }
@@ -228,7 +244,20 @@ struct StatusBarView: View {
         .locusGlass(.clear, in: RoundedRectangle(cornerRadius: LocusMetrics.barRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: LocusMetrics.barRadius, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityHint(isTappable ? "Starts the loopback tunnel Locus needs." : "")
+        .accessibilityHint(statusHint)
+    }
+
+    private var statusHint: String {
+        switch display {
+        case .tunnelBlocked:
+            return "Explains why the built-in tunnel can’t run here, and what to use instead."
+        case .tunnelAction:
+            return "Starts the loopback tunnel Locus needs."
+        case .tunnelProblem:
+            return "Shows what went wrong and tries again."
+        default:
+            return ""
+        }
     }
 
     @ViewBuilder
@@ -236,6 +265,10 @@ struct StatusBarView: View {
         switch display {
         case .tunnelAction:
             Image(systemName: TunnelController.isEmbedded ? "bolt.horizontal.circle.fill" : "arrow.up.forward.app.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(LocusTheme.accent)
+        case .tunnelBlocked:
+            Image(systemName: "arrow.up.forward.app.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(LocusTheme.accent)
         case .tunnelProblem:
@@ -256,8 +289,10 @@ struct StatusBarView: View {
     }
 
     private func handleTap() {
-        guard TunnelController.isEmbedded else {
-            LocalDevVPN.openOrInstall()
+        // A build that can never raise its own tunnel gets the explanation and
+        // the LocalDevVPN route, not a retry that will fail the same way.
+        if let blocker = tunnel.blocker ?? TunnelController.staticBlocker {
+            troubleBlocker = blocker
             return
         }
         // A previous failure has a reason attached; surface it rather than
@@ -265,11 +300,20 @@ struct StatusBarView: View {
         if case .failed(let reason) = tunnel.state {
             session.lastError = reason
         }
+        startBuiltInTunnel()
+    }
+
+    private func startBuiltInTunnel() {
         isConnecting = true
         Task {
             await tunnel.connect()
             isConnecting = false
             refresh()
+            // Connecting can *discover* a blocker: a stripped entitlement only
+            // shows itself when iOS is asked to save the configuration.
+            if let blocker = tunnel.blocker {
+                troubleBlocker = blocker
+            }
         }
     }
 

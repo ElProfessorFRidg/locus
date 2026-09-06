@@ -68,7 +68,15 @@ Reaching that service needs a loopback tunnel — an interface the phone can tal
 
 If the first packet-rewrite strategy can't pass traffic on your network, Locus tries the rest and keeps the one that works. Settings → **Tunnel** shows which is live, and the tunnel log shows what the extension itself reported.
 
-**LiveContainer can't load app extensions,** so there is no built-in tunnel there — install **[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044)** and connect it instead. Both use `10.7.0.1` by default, so Locus works with whichever tunnel is up.
+**When the built-in tunnel can't run, Locus says so and points at LocalDevVPN.** Locus is sideloaded, so the entitlements in this repo are a request, not a fact — whatever re-signs the IPA decides whether they were granted, and Apple only grants `packet-tunnel-provider` to paid developer accounts. Rather than failing later with "permission denied", Locus reads its own `embedded.mobileprovision` at launch and reports, in the status bar and in Settings:
+
+- **no extension in the bundle** — LiveContainer, or a re-signer that dropped plug-ins;
+- **entitlement not granted** — re-signed with a free profile (the ~7-day expiry gives it away, and it's called out);
+- **iOS refused the VPN configuration** — a declined prompt, or a stale profile.
+
+Each one opens an explanation with a **Get / Open LocalDevVPN** button and exactly what this copy was signed with. [LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) raises the same tunnel on `10.7.0.1`, so Locus works with whichever one is up.
+
+A missing **App Group** is reported separately as a warning, not a blocker: it only costs the tunnel's diagnostic log, and everything else keeps working.
 
 Start a teleport on Wi‑Fi first; the session can keep working on cellular afterward.
 

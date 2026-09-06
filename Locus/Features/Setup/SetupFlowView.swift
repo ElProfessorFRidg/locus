@@ -15,6 +15,7 @@ struct SetupFlowView: View {
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @State private var tunnelUp = TunnelController.loopbackReachable
     @State private var isConnectingTunnel = false
+    @State private var troubleBlocker: TunnelBlocker?
     @StateObject private var tunnel = TunnelController.shared
     @Environment(\.scenePhase) private var scenePhase
 
@@ -101,6 +102,9 @@ struct SetupFlowView: View {
                 onCancel: { showImporter = false }
             )
             .ignoresSafeArea()
+        }
+        .sheet(item: $troubleBlocker) { blocker in
+            TunnelTroubleView(blocker: blocker) { connectTunnel() }
         }
         .alert("Locus", isPresented: Binding(
             get: { session.lastError != nil },
@@ -327,12 +331,12 @@ struct SetupFlowView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if tunnelUp {
                         tipRow(systemImage: "checkmark.circle.fill", title: "Tunnel up", detail: "Locus can reach your iPhone's own developer service. You're ready.")
-                    } else if TunnelController.isEmbedded {
+                    } else if let blocker = activeBlocker {
+                        tipRow(systemImage: "exclamationmark.triangle.fill", title: blocker.title, detail: blocker.summary)
+                        tipRow(systemImage: "arrow.down.app.fill", title: "Use LocalDevVPN", detail: "It raises the same tunnel on \(TunnelConfig.targetIP), and Locus uses whichever one is up.")
+                    } else {
                         tipRow(systemImage: "bolt.fill", title: "One tap", detail: "Locus starts its own loopback tunnel. iOS will ask once to allow the VPN configuration.")
                         tipRow(systemImage: "hand.raised.fill", title: "Nothing leaves the phone", detail: "It only lets this iPhone talk to itself at \(TunnelConfig.targetIP). It forwards no traffic anywhere.")
-                    } else {
-                        tipRow(systemImage: "arrow.down.app.fill", title: "Install", detail: "This build has no built-in tunnel, so get LocalDevVPN from the App Store.")
-                        tipRow(systemImage: "power.circle.fill", title: "Connect", detail: "Open it and turn the VPN on. Leave the default IP alone.")
                     }
                     tipRow(systemImage: "wifi", title: "First teleport on Wi\u{2011}Fi", detail: "Start your first teleport while on Wi\u{2011}Fi. After that, it can keep working on cellular.")
                 }
@@ -344,7 +348,7 @@ struct SetupFlowView: View {
             Spacer()
 
             VStack(spacing: 12) {
-                if TunnelController.isEmbedded, !tunnelUp {
+                if !tunnelUp, activeBlocker == nil {
                     Button(action: connectTunnel) {
                         HStack(spacing: 8) {
                             if isConnectingTunnel {
@@ -363,30 +367,36 @@ struct SetupFlowView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isConnectingTunnel)
-                } else if !TunnelController.isEmbedded {
+                } else if !tunnelUp, let blocker = activeBlocker, blocker.suggestsLocalDevVPN {
                     Button {
-                        if localDevVPNInstalled {
-                            LocalDevVPN.openInstalled()
-                        } else {
-                            LocalDevVPN.openAppStore()
-                        }
+                        LocalDevVPN.openOrInstall()
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: localDevVPNInstalled ? "lock.shield.fill" : "apple.logo")
                             Text(localDevVPNInstalled ? "Open LocalDevVPN" : "Get LocalDevVPN")
-                                .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .foregroundStyle(.primary)
-                        .locusGlass(.interactive, in: Capsule())
-                        .contentShape(Capsule())
                     }
+                    .locusPrimaryButton()
+
+                    Button("Why can’t Locus do this itself?") {
+                        troubleBlocker = blocker
+                    }
+                    .font(.subheadline)
                     .buttonStyle(.plain)
+                    .foregroundStyle(LocusTheme.accent)
+                    .frame(maxWidth: .infinity)
                 }
 
-                primaryButton(tunnelUp ? "Start teleporting" : "Skip for now") {
-                    onFinished()
+                if tunnelUp || activeBlocker == nil {
+                    primaryButton(tunnelUp ? "Start teleporting" : "Skip for now") {
+                        onFinished()
+                    }
+                } else {
+                    Button("I’ve connected it — continue") {
+                        onFinished()
+                    }
+                    .locusSecondaryButton()
                 }
             }
             .padding(.horizontal, 24)
@@ -395,22 +405,30 @@ struct SetupFlowView: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: tunnelUp)
     }
 
+    /// Whether this copy of Locus can raise its own tunnel at all. Sideloaded
+    /// builds signed with a free profile can't, and that has to be said here
+    /// rather than three screens later when a teleport fails.
+    private var activeBlocker: TunnelBlocker? {
+        tunnel.blocker ?? TunnelController.staticBlocker
+    }
+
     private var vpnTitle: String {
         if tunnelUp { return "You're all set" }
-        if TunnelController.isEmbedded { return "Turn on the tunnel" }
-        return localDevVPNInstalled ? "Connect LocalDevVPN" : "One more app"
+        if let blocker = activeBlocker {
+            return blocker.suggestsLocalDevVPN ? "One more app" : blocker.title
+        }
+        return "Turn on the tunnel"
     }
 
     private var vpnBody: String {
         if tunnelUp {
             return "The tunnel is up and Locus can talk to your iPhone's location system."
         }
-        if TunnelController.isEmbedded {
-            return "Locus needs a private loopback tunnel to reach your iPhone's own developer service. It carries one built in — this just switches it on."
+        if let blocker = activeBlocker {
+            guard blocker.suggestsLocalDevVPN else { return blocker.summary }
+            return "This copy of Locus can't create the tunnel itself, so LocalDevVPN does it. Install it, turn it on, and come back — everything else works exactly the same."
         }
-        return localDevVPNInstalled
-            ? "LocalDevVPN is installed. Open it to turn on the private tunnel Locus needs, then come back here."
-            : "LocalDevVPN creates a private tunnel Locus uses to talk to your phone's location system. Install it, turn it on, then you're ready to teleport."
+        return "Locus needs a private loopback tunnel to reach your iPhone's own developer service. It carries one built in — this just switches it on."
     }
 
     private func connectTunnel() {

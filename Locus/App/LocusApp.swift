@@ -50,4 +50,7 @@ struct LocusApp: App {
 
 extension Notification.Name {
     static let locusImportGPX = Notification.Name("locusImportGPX")
+    /// Posted with a `TunnelBlocker` when something that needed the tunnel found
+    /// that this build can't raise one, so the map can open the explanation.
+    static let locusShowTunnelTrouble = Notification.Name("locusShowTunnelTrouble")
 }

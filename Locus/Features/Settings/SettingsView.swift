@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var showDriveSettings = false
     @State private var showTunnelAdvanced = false
     @State private var showDiagnostics = false
+    @State private var troubleBlocker: TunnelBlocker?
     @State private var tunnelIP = TunnelConfig.targetIP
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @State private var loopbackUp = TunnelController.loopbackReachable
@@ -72,6 +73,14 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showDiagnostics) {
                 TunnelDiagnosticsView()
+            }
+            .sheet(item: $troubleBlocker) { blocker in
+                TunnelTroubleView(blocker: blocker) {
+                    Task {
+                        await tunnel.connect()
+                        refresh()
+                    }
+                }
             }
             .fullScreenCover(isPresented: $showNameEasterEgg) {
                 LocusEasterEggView()
@@ -138,12 +147,36 @@ struct SettingsView: View {
                 }
             }
 
-            if TunnelController.isEmbedded {
+            // Locus is sideloaded, so "this copy can’t create a VPN" is a normal
+            // outcome, not an edge case. Say it here rather than letting it
+            // surface as a connect that quietly never works.
+            if let blocker = activeBlocker {
+                TunnelTroubleBanner(blocker: blocker) { troubleBlocker = blocker }
+
+                if blocker.suggestsLocalDevVPN {
+                    Button {
+                        LocalDevVPN.openOrInstall()
+                    } label: {
+                        Label(
+                            localDevVPNInstalled ? "Open LocalDevVPN" : "Get LocalDevVPN (App Store)",
+                            systemImage: localDevVPNInstalled ? "lock.shield.fill" : "arrow.down.app.fill"
+                        )
+                    }
+                }
+            }
+
+            ForEach(TunnelController.warnings) { warning in
+                TunnelWarningRow(warning: warning)
+            }
+
+            // Nothing here can drive a tunnel this build can't create, so the
+            // controls only appear when Locus' own extension is actually usable.
+            if builtInTunnelUsable {
                 Toggle("Connect automatically", isOn: $tunnel.autoConnect)
 
                 Button {
                     Task {
-                        if loopbackUp || tunnel.state.isConnected {
+                        if tunnel.state.isConnected {
                             await tunnel.disconnect()
                         } else {
                             await tunnel.connect()
@@ -158,13 +191,15 @@ struct SettingsView: View {
                             ProgressView()
                         }
                     } else {
+                        // Keyed to Locus' own tunnel, not to `loopbackUp` — one
+                        // LocalDevVPN raised is not ours to disconnect.
                         Label(
-                            loopbackUp ? "Disconnect tunnel" : "Connect tunnel now",
-                            systemImage: loopbackUp ? "bolt.slash.fill" : "bolt.fill"
+                            tunnel.state.isConnected ? "Disconnect tunnel" : "Connect tunnel now",
+                            systemImage: tunnel.state.isConnected ? "bolt.slash.fill" : "bolt.fill"
                         )
                     }
                 }
-                .disabled(tunnel.state.isBusy)
+                .disabled(tunnel.state.isBusy || (loopbackUp && !tunnel.state.isConnected))
 
                 Toggle("Keep it up on demand", isOn: $tunnel.onDemand)
 
@@ -184,14 +219,13 @@ struct SettingsView: View {
                 } label: {
                     Label("Tunnel log", systemImage: "text.alignleft")
                 }
-            } else {
+            } else if loopbackUp {
+                Label("Provided by LocalDevVPN", systemImage: "arrow.triangle.branch")
+                    .foregroundStyle(.secondary)
                 Button {
                     LocalDevVPN.openOrInstall()
                 } label: {
-                    Label(
-                        localDevVPNInstalled ? "Open LocalDevVPN" : "Get LocalDevVPN (App Store)",
-                        systemImage: localDevVPNInstalled ? "lock.shield.fill" : "arrow.down.app.fill"
-                    )
+                    Label("Open LocalDevVPN", systemImage: "lock.shield.fill")
                 }
             }
 
@@ -203,15 +237,42 @@ struct SettingsView: View {
         }
     }
 
+    /// The blocker in force, whether spotted up front (no extension, missing
+    /// entitlement) or discovered when iOS refused the configuration.
+    ///
+    /// Nil once the loopback is actually reachable: if LocalDevVPN is connected,
+    /// everything works, and a banner explaining what Locus can't do would be
+    /// noise about a problem that no longer has a symptom.
+    private var activeBlocker: TunnelBlocker? {
+        guard !loopbackUp else { return nil }
+        return tunnel.blocker ?? TunnelController.staticBlocker
+    }
+
+    /// Whether Locus' own extension can actually be driven from here. Separate
+    /// from `activeBlocker`, which goes quiet once LocalDevVPN has the loopback
+    /// up — a working tunnel someone else raised is not a reason to offer
+    /// "Disconnect" for a tunnel this build never started.
+    private var builtInTunnelUsable: Bool {
+        TunnelController.isEmbedded
+            && TunnelController.staticBlocker == nil
+            && tunnel.blocker?.isPermanent != true
+    }
+
     private var tunnelFooter: String {
-        if TunnelController.isEmbedded {
+        if let blocker = activeBlocker {
+            return blocker.summary
+        }
+        if loopbackUp, !builtInTunnelUsable {
+            return "The loopback tunnel on \(TunnelConfig.targetIP) is up and Locus is using it. "
+                + "It was raised by LocalDevVPN, so start and stop it there."
+        }
+        if builtInTunnelUsable {
             return "Locus carries its own loopback tunnel, so it can bring one up without LocalDevVPN. "
                 + "iOS asks once to allow the VPN configuration; nothing leaves the device — the tunnel only lets "
                 + "this iPhone reach its own developer service at \(TunnelConfig.targetIP). "
                 + "If the first method can't pass traffic, Locus tries the others and keeps the one that works."
         }
-        return "This build has no built-in tunnel — LiveContainer can't load app extensions. "
-            + "Connect LocalDevVPN instead, then come back. Default tunnel IP is \(TunnelConfig.defaultTargetIP)."
+        return "Connect the LocalDevVPN app instead, then come back. Default tunnel IP is \(TunnelConfig.defaultTargetIP)."
     }
 
     private var tunnelStatusText: String {
@@ -219,13 +280,14 @@ struct SettingsView: View {
             if case .connected(let method, let interface) = tunnel.state {
                 return "Connected · \(method.title) · \(interface)"
             }
-            return "Connected"
+            return "Connected · LocalDevVPN"
         }
         switch tunnel.state {
         case .connecting: return "Connecting…"
         case .failed: return "Failed"
-        case .unavailable: return "Not built in"
-        case .idle, .connected: return "Not connected"
+        case .unavailable(let blocker): return blocker.shortTitle
+        case .idle, .connected:
+            return activeBlocker == nil ? "Not connected" : "Unavailable"
         }
     }
 

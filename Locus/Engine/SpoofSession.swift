@@ -156,7 +156,7 @@ final class SpoofSession: ObservableObject {
         pin = coordinate
         Task { [weak self] in
             guard let self else { return }
-            await self.prepareTunnel()
+            guard await self.prepareTunnel() else { return }
             self.apply(coordinate, pairing: pairing, markRecent: true)
         }
     }
@@ -197,10 +197,33 @@ final class SpoofSession: ObservableObject {
     /// Brings Locus' own tunnel up if it isn't already, so a teleport doesn't
     /// fail with "could not open the developer tunnel" when one tap could have
     /// fixed it. Silent when the tunnel is already reachable.
-    private func prepareTunnel() async {
+    ///
+    /// Returns `false` only when there is no usable tunnel *and* none can be
+    /// raised — a sideloaded build without the VPN entitlement, LiveContainer,
+    /// or a refused configuration. The caller stops there rather than letting
+    /// the location engine fail several layers down with an error that blames
+    /// the wrong thing.
+    @discardableResult
+    private func prepareTunnel() async -> Bool {
         let controller = TunnelController.shared
-        guard controller.autoConnect else { return }
-        _ = await controller.ensureConnected()
+
+        if controller.autoConnect {
+            if await controller.ensureConnected() { return true }
+        } else if TunnelController.loopbackReachable {
+            return true
+        }
+
+        guard !TunnelController.loopbackReachable else { return true }
+
+        if let blocker = controller.blocker ?? TunnelController.staticBlocker {
+            // The explanation sheet says all of this properly, with the button
+            // that fixes it — an alert on top would just be the same words twice.
+            NotificationCenter.default.post(name: .locusShowTunnelTrouble, object: blocker)
+            return false
+        }
+
+        lastError = "The tunnel to \(TunnelConfig.targetIP) isn’t up. Start it from the status bar, or connect the LocalDevVPN app."
+        return false
     }
 
     // MARK: - Joystick
@@ -218,7 +241,7 @@ final class SpoofSession: ObservableObject {
         cancelRoute()
         Task { [weak self] in
             guard let self else { return }
-            await self.prepareTunnel()
+            guard await self.prepareTunnel() else { return }
             if self.simulated == nil {
                 self.apply(start, pairing: pairing, markRecent: false)
             }
@@ -311,7 +334,10 @@ final class SpoofSession: ObservableObject {
 
         routeTask = Task { [weak self] in
             guard let self else { return }
-            await self.prepareTunnel()
+            guard await self.prepareTunnel() else {
+                self.finishRoute(generation: generation)
+                return
+            }
             await self.countDown(seconds: profile.startDelaySeconds)
             if !Task.isCancelled {
                 await self.run(plan: basePlan, profile: profile, pairing: pairing)

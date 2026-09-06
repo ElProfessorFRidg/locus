@@ -43,9 +43,19 @@ During setup, tap **Turn on the tunnel**. iOS asks once to allow the VPN configu
 
 If the first packet strategy can't pass traffic on your network, Locus tries the others and keeps whichever works. Settings → **Tunnel** shows which one is live, and **Tunnel log** shows what the extension itself reported.
 
-### Fallback: the LocalDevVPN app
+### If the app says to use LocalDevVPN
 
-App extensions don't load in **LiveContainer**, so there is no built-in tunnel there. Install [LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) and connect it instead (default tunnel IP `10.7.0.1`). Locus uses whichever tunnel is up, so the two are interchangeable.
+Locus is sideloaded, so the built-in tunnel doesn't always survive installation. When it can't run, the app says which of these it is — in the status bar, in Settings → Tunnel, and during this step — with a button to install or open LocalDevVPN:
+
+| What you'll see | Why | What to do |
+| --- | --- | --- |
+| **This build has no built-in tunnel** | LiveContainer can't load app extensions, or a re-signer dropped them | Use LocalDevVPN |
+| **This build can't create a VPN** | Re-signed with a free Apple ID — Apple only grants Network Extension to paid accounts | Use LocalDevVPN, or re-sign with a paid account |
+| **iOS refused the VPN configuration** | You declined the prompt, or an old Locus VPN profile is stuck | Tap Connect again and allow it; or delete the old profile under Settings › General › VPN & Device Management |
+
+[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) raises exactly the same tunnel on `10.7.0.1`, so the two are interchangeable — teleport, joystick and routes all work the same.
+
+Tap the message for the full explanation, including what this copy was actually signed with. A **Tunnel log unavailable** notice is only a warning: the App Group was stripped, so the extension's own log can't be read, but the tunnel itself is fine.
 
 ## 4. Teleport
 

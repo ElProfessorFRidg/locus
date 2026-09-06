@@ -30,7 +30,7 @@ final class TunnelController: ObservableObject {
     static let shared = TunnelController()
 
     enum State: Equatable {
-        case unavailable(String)
+        case unavailable(TunnelBlocker)
         case idle
         case connecting
         /// Tunnel is up *and* the probe confirmed traffic passes over `interface`.
@@ -92,8 +92,8 @@ final class TunnelController: ObservableObject {
         method = UserDefaults.standard.string(forKey: Keys.method)
             .flatMap(LocusTunnelMethod.init(rawValue:)) ?? .default
 
-        if let reason = Self.unavailableReason {
-            state = .unavailable(reason)
+        if let blocker = Self.staticBlocker {
+            state = .unavailable(blocker)
         }
     }
 
@@ -120,15 +120,42 @@ final class TunnelController: ObservableObject {
 
     nonisolated static var isEmbedded: Bool { providerBundleIdentifier != nil }
 
-    nonisolated private static var unavailableReason: String? {
+    /// Why the built-in tunnel can't be used at all, or `nil` if it can.
+    ///
+    /// Checked before anything is attempted, because Locus is sideloaded: the
+    /// entitlements in this repo are a request, and whatever re-signed the IPA
+    /// decides whether they were granted. Saying "this build can't do it, use
+    /// LocalDevVPN" up front beats an opaque failure at the moment iOS is asked
+    /// to save a VPN configuration.
+    nonisolated static var staticBlocker: TunnelBlocker? {
         #if targetEnvironment(simulator)
-        return "Network extensions don’t run in the Simulator."
+        return .simulator
         #else
-        if providerBundleIdentifier == nil {
-            return "The built-in tunnel isn’t in this build. LiveContainer can’t load app extensions — use the LocalDevVPN app instead."
+        if providerBundleIdentifier == nil { return .noExtension }
+        if AppEntitlements.hasPacketTunnelProvider.isDefinitelyMissing
+            || AppEntitlements.hasVPNAPI.isDefinitelyMissing {
+            return .missingEntitlement
         }
         return nil
         #endif
+    }
+
+    /// The blocker currently in force, whether found up front or at runtime.
+    var blocker: TunnelBlocker? {
+        if case .unavailable(let blocker) = state { return blocker }
+        return nil
+    }
+
+    /// Problems that degrade the tunnel without stopping it. Separate from
+    /// `blocker` on purpose: a missing App Group costs the extension's log and
+    /// nothing else, and sending someone off to install another app over that
+    /// would be wrong.
+    nonisolated static var warnings: [TunnelWarning] {
+        var found: [TunnelWarning] = []
+        if isEmbedded, staticBlocker == nil, !AppEntitlements.appGroupWorks {
+            found.append(.appGroupUnavailable)
+        }
+        return found
     }
 
     /// True when the loopback address is already reachable, whoever put it there
@@ -153,12 +180,10 @@ final class TunnelController: ObservableObject {
     /// (LocalDevVPN, or a tunnel left up from an earlier run), nothing is started.
     @discardableResult
     func ensureConnected() async -> Bool {
-        if Self.loopbackReachable {
-            if !state.isConnected && !state.isUnavailable {
-                state = .connected(method: method, interface: currentInterfaceLabel())
-            }
-            return true
-        }
+        // Deliberately does not claim `.connected` here: the loopback may well
+        // be LocalDevVPN's, and `state` means "what Locus' own tunnel is doing".
+        // Callers that only care whether a tunnel exists ask `loopbackReachable`.
+        if Self.loopbackReachable { return true }
         guard Self.isEmbedded, !state.isUnavailable else { return false }
         return await connect()
     }
@@ -167,10 +192,15 @@ final class TunnelController: ObservableObject {
     /// ladder when the first choice comes up connected-but-dead.
     @discardableResult
     func connect(autoSearch: Bool = true) async -> Bool {
-        guard !state.isUnavailable, Self.isEmbedded else {
-            state = .unavailable(Self.unavailableReason ?? "No embedded tunnel in this build.")
+        if let blocker = Self.staticBlocker {
+            state = .unavailable(blocker)
             return false
         }
+        // A permanent blocker won't change, so retrying just fails again. A
+        // refused configuration might well have been a prompt someone declined
+        // and now wants to allow — that one is worth another go, which is why
+        // `ensureConnected` guards on `isUnavailable` and this doesn't.
+        if let existing = blocker, existing.isPermanent { return false }
         guard !state.isBusy else { return false }
 
         state = .connecting
@@ -181,7 +211,13 @@ final class TunnelController: ObservableObject {
             : [method]
 
         for candidate in ladder {
-            guard await start(method: candidate) else { continue }
+            guard await start(method: candidate) else {
+                // A refused configuration is a property of the build, not of the
+                // method — trying the next one would fail identically five more
+                // times and bury the real reason.
+                if state.isUnavailable { return false }
+                continue
+            }
 
             if await probe() {
                 method = candidate
@@ -197,9 +233,8 @@ final class TunnelController: ObservableObject {
         }
 
         state = .failed(
-            "The tunnel started but nothing reached \(TunnelConfig.targetIP). "
-            + "Check that Locus is allowed to add a VPN configuration under "
-            + "Settings › General › VPN & Device Management."
+            "Every packet strategy started, but nothing reached \(TunnelConfig.targetIP). "
+            + "If this keeps happening, connect the LocalDevVPN app instead — Locus will use its tunnel."
         )
         return false
     }
@@ -251,7 +286,10 @@ final class TunnelController: ObservableObject {
             try await manager.saveToPreferences()
             try await manager.loadFromPreferences()
         } catch {
-            state = .failed(Self.describe(configurationError: error))
+            // This is where a sideloaded build without the entitlement actually
+            // dies, and the error alone ("permission denied") explains nothing.
+            // Classify it so the UI can point at LocalDevVPN instead.
+            state = Self.classify(configurationError: error)
             return nil
         }
 
@@ -293,7 +331,7 @@ final class TunnelController: ObservableObject {
         do {
             try manager.connection.startVPNTunnel(options: options)
         } catch {
-            state = .failed(Self.describe(configurationError: error))
+            state = Self.classify(configurationError: error)
             return false
         }
 
@@ -374,14 +412,30 @@ final class TunnelController: ObservableObject {
         return "Unknown"
     }
 
-    private static func describe(configurationError error: Error) -> String {
+    /// Turns a NetworkExtension error into either a plain failure or a blocker,
+    /// because the two need very different words.
+    ///
+    /// `configurationReadWriteFailed` is what iOS returns both when the app has
+    /// no VPN entitlement — the normal outcome for a sideloaded build re-signed
+    /// with a free profile — and when the person simply declined the system
+    /// prompt. Neither is a retry-and-hope situation, and the first is permanent
+    /// for this copy of the app, so it becomes a blocker that names LocalDevVPN.
+    private static func classify(configurationError error: Error) -> State {
         let ns = error as NSError
-        if ns.domain == NEVPNErrorDomain,
-           ns.code == NEVPNError.Code.configurationReadWriteFailed.rawValue {
-            return "iOS refused to save the VPN profile. Approve the Locus VPN configuration when prompted, "
-                + "or remove an old one under Settings › General › VPN & Device Management."
+        guard ns.domain == NEVPNErrorDomain else {
+            return .failed(error.localizedDescription)
         }
-        return error.localizedDescription
+
+        switch ns.code {
+        case NEVPNError.Code.configurationReadWriteFailed.rawValue,
+             NEVPNError.Code.configurationInvalid.rawValue,
+             NEVPNError.Code.configurationDisabled.rawValue:
+            return .unavailable(.vpnConfigurationRefused(error.localizedDescription))
+        case NEVPNError.Code.configurationStale.rawValue:
+            return .failed("The saved VPN configuration went stale. Try connecting again.")
+        default:
+            return .failed(error.localizedDescription)
+        }
     }
 
     // MARK: - Interface enumeration
