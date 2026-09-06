@@ -11,6 +11,18 @@ enum SpeedUnit: String, Codable, CaseIterable, Identifiable {
 
     var short: String { self == .kph ? "km/h" : "mph" }
 
+    /// What the roads where this phone lives are actually signed in.
+    ///
+    /// The UK is the reason this isn't just `usesMetricSystem`: it is metric for
+    /// nearly everything and still posts speed limits in mph, and Apple models
+    /// that as its own measurement system.
+    static var locale: SpeedUnit {
+        switch Locale.current.measurementSystem {
+        case .us, .uk: return .mph
+        default: return .kph
+        }
+    }
+
     /// Metres per second in one unit.
     var metresPerSecond: Double { self == .kph ? 1000.0 / 3600.0 : 1609.344 / 3600.0 }
 
@@ -245,12 +257,14 @@ struct DriveProfile: Codable, Equatable {
     var speedTolerance: Double = 0.10
 
     /// Used when `speedSource == .fixed`, in `units`.
-    var fixedSpeed: Double = 50
+    var fixedSpeed: Double = SpeedUnit.locale == .kph ? 50 : 30
 
     /// Never exceed this, whatever the limit estimate says. In `units`.
-    var speedCeiling: Double = 130
+    var speedCeiling: Double = SpeedUnit.locale == .kph ? 130 : 80
 
-    var units: SpeedUnit = .kph
+    /// Follows the phone's locale on a fresh install — an mph device showing a
+    /// 130 ceiling would read as nonsense, so the two speeds above follow it too.
+    var units: SpeedUnit = .locale
 
     /// Wall-clock multiplier. 1 = real time, 4 = a four-minute commute in one.
     var timeScale: Double = 1.0
@@ -384,6 +398,58 @@ struct DriveProfile: Codable, Equatable {
         units = newUnits
         fixedSpeed = (newUnits.fromMetresPerSecond(fixedMS) / 5).rounded() * 5
         speedCeiling = (newUnits.fromMetresPerSecond(ceilingMS) / 5).rounded() * 5
+    }
+
+    // MARK: - Decoding
+
+    init() {}
+
+    /// Decodes field by field, falling back to the default for anything absent.
+    ///
+    /// Synthesised `Codable` throws if a single key is missing, and `load()`
+    /// answers a throw with a fresh profile — so adding one parameter to this
+    /// struct would silently reset everyone's other thirty. Every new field is
+    /// simply absent from every stored profile, which makes that the normal
+    /// case, not an edge one.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = DriveProfile()
+
+        func value<T: Decodable>(_ key: CodingKeys, _ whenAbsent: T) -> T {
+            (try? container.decode(T.self, forKey: key)) ?? whenAbsent
+        }
+
+        speedSource = value(.speedSource, fallback.speedSource)
+        speedTolerance = value(.speedTolerance, fallback.speedTolerance)
+        fixedSpeed = value(.fixedSpeed, fallback.fixedSpeed)
+        speedCeiling = value(.speedCeiling, fallback.speedCeiling)
+        units = value(.units, fallback.units)
+        timeScale = value(.timeScale, fallback.timeScale)
+        updateRateHz = value(.updateRateHz, fallback.updateRateHz)
+
+        vehicle = value(.vehicle, fallback.vehicle)
+        acceleration = value(.acceleration, fallback.acceleration)
+        braking = value(.braking, fallback.braking)
+        cornering = value(.cornering, fallback.cornering)
+        speedJitter = value(.speedJitter, fallback.speedJitter)
+
+        traffic = value(.traffic, fallback.traffic)
+        stopAtJunctions = value(.stopAtJunctions, fallback.stopAtJunctions)
+        junctionStopChance = value(.junctionStopChance, fallback.junctionStopChance)
+        junctionStopSeconds = value(.junctionStopSeconds, fallback.junctionStopSeconds)
+        waypointDwellSeconds = value(.waypointDwellSeconds, fallback.waypointDwellSeconds)
+
+        gpsNoiseMetres = value(.gpsNoiseMetres, fallback.gpsNoiseMetres)
+        laneOffsetMetres = value(.laneOffsetMetres, fallback.laneOffsetMetres)
+        driveOnLeft = value(.driveOnLeft, fallback.driveOnLeft)
+        endBehavior = value(.endBehavior, fallback.endBehavior)
+        startDelaySeconds = value(.startDelaySeconds, fallback.startDelaySeconds)
+
+        showHUD = value(.showHUD, fallback.showHUD)
+        hapticOnLimitChange = value(.hapticOnLimitChange, fallback.hapticOnLimitChange)
+        warnWhenOverLimit = value(.warnWhenOverLimit, fallback.warnWhenOverLimit)
+        consumption = value(.consumption, fallback.consumption)
+        showTripEconomy = value(.showTripEconomy, fallback.showTripEconomy)
     }
 
     // MARK: - Persistence

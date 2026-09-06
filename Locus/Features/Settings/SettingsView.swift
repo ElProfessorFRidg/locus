@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var tunnelIP = TunnelConfig.targetIP
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @State private var loopbackUp = TunnelController.loopbackReachable
+    @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
 
     private var supportsOnDevicePairing: Bool {
         if #available(iOS 27.0, *) { return true }
@@ -37,6 +38,7 @@ struct SettingsView: View {
                 tunnelSection
                 if showTunnelAdvanced { tunnelAdvancedSection }
                 drivingSection
+                appearanceSection
                 privacySection
                 aboutSection
                 easterEggSection
@@ -229,11 +231,57 @@ struct SettingsView: View {
                 }
             }
 
+            // Works whoever raised the tunnel: it is the same handshake the
+            // location engine is about to make, so a pass here means a teleport
+            // will get through and a fail means it won't.
+            if loopbackUp || builtInTunnelUsable {
+                Button {
+                    Task { await tunnel.runProbe() }
+                } label: {
+                    HStack {
+                        Label("Test the connection", systemImage: "checkmark.circle")
+                        Spacer()
+                        if tunnel.lastProbe?.isRunning == true { ProgressView() }
+                    }
+                }
+                .disabled(tunnel.lastProbe?.isRunning == true)
+
+                if let probe = tunnel.lastProbe, !probe.isRunning {
+                    probeResultRow(probe)
+                }
+            }
+
             Toggle("Advanced addresses", isOn: $showTunnelAdvanced.animation(.snappy))
         } header: {
             Text("Tunnel")
         } footer: {
             Text(tunnelFooter)
+        }
+    }
+
+    /// The outcome of the last hand-run test, in the words someone would use to
+    /// decide what to do next.
+    @ViewBuilder
+    private func probeResultRow(_ probe: TunnelController.ProbeOutcome) -> some View {
+        switch probe {
+        case .running:
+            EmptyView()
+        case .reachable(let milliseconds, let interface):
+            Label {
+                Text("Reached \(TunnelConfig.targetIP) in \(milliseconds) ms over \(interface).")
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(LocusTheme.statusGood)
+            }
+            .font(.footnote)
+        case .unreachable(let interface):
+            Label {
+                Text("Nothing answered on \(TunnelConfig.targetIP) over \(interface). The tunnel is up but isn’t carrying traffic — try another method, or connect LocalDevVPN.")
+            } icon: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(LocusTheme.statusBad)
+            }
+            .font(.footnote)
         }
     }
 
@@ -357,6 +405,21 @@ struct SettingsView: View {
     }
 
     // MARK: - Rest
+
+    private var appearanceSection: some View {
+        Section {
+            Picker("Appearance", selection: $appearance) {
+                ForEach(LocusAppearance.allCases) { option in
+                    Label(option.title, systemImage: option.icon).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Appearance")
+        } footer: {
+            Text("Locus is designed dark — the map and the glass are built for it — but a light map is easier to read outdoors, and System follows the rest of iOS.")
+        }
+    }
 
     private var privacySection: some View {
         Section("Privacy") {

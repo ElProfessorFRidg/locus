@@ -5,6 +5,7 @@ struct LocusApp: App {
     @StateObject private var session = SpoofSession()
     @StateObject private var pairing = PairingStore()
     @AppStorage(SetupGate.defaultsKey) private var setupComplete = false
+    @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
 
     /// Map when setup finished, or when already paired outside this walkthrough.
     private var showMap: Bool {
@@ -25,7 +26,8 @@ struct LocusApp: App {
             }
             .environmentObject(session)
             .environmentObject(pairing)
-            .preferredColorScheme(.dark)
+            // `nil` for .system, which hands the choice back to iOS.
+            .preferredColorScheme(appearance.colorScheme)
             .onOpenURL { url in
                 handleIncoming(url)
             }

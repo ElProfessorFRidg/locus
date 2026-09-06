@@ -361,6 +361,37 @@ final class TunnelController: ObservableObject {
 
     // MARK: - Probe
 
+    /// Result of the last hand-run connection test, for the Settings row.
+    enum ProbeOutcome: Equatable {
+        case running
+        case reachable(milliseconds: Int, interface: String)
+        case unreachable(interface: String)
+
+        var isRunning: Bool { self == .running }
+    }
+
+    @Published private(set) var lastProbe: ProbeOutcome?
+
+    /// The probe as a user-facing action: same TCP handshake the connect path
+    /// uses, but the answer is kept and shown rather than only acted on.
+    ///
+    /// Worth having separately because "the tunnel says connected" and "the
+    /// tunnel carries traffic" are different claims, and only the second one
+    /// predicts whether a teleport will work.
+    func runProbe() async {
+        guard lastProbe?.isRunning != true else { return }
+        lastProbe = .running
+
+        let interface = currentInterfaceLabel()
+        let start = Date()
+        let reachable = await probe()
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+
+        lastProbe = reachable
+            ? .reachable(milliseconds: elapsed, interface: interface)
+            : .unreachable(interface: interface)
+    }
+
     /// Opens a real TCP connection to the loopback endpoint the location engine
     /// uses. `NEVPNStatus == .connected` is not evidence the utun is bound to the
     /// active interface; a completed handshake is.

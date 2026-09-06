@@ -277,11 +277,21 @@ struct StatusBarView: View {
                 .foregroundStyle(LocusTheme.statusBad)
         case .spoof:
             if case .active = session.status, let sim = session.simulated {
-                Text(String(format: "%.4f, %.4f", sim.latitude, sim.longitude))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                // An address if one has been resolved for where the fix actually
+                // is; coordinates otherwise, which is what a moving route gets.
+                if let address = session.simulatedAddress {
+                    Text(address)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                } else {
+                    Text(String(format: "%.4f, %.4f", sim.latitude, sim.longitude))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
             }
         case .ready, .tunnelBusy:
             EmptyView()
@@ -337,11 +347,17 @@ struct BottomControlsView: View {
     var body: some View {
         VStack(spacing: 12) {
             if session.joystickActive {
-                JoystickPad { vector in
-                    session.updateJoystick(vector: vector)
+                HStack(alignment: .bottom, spacing: 12) {
+                    if let joystick = session.joystick {
+                        JoystickReadout(telemetry: joystick, units: session.drive.units)
+                            .transition(.opacity.combined(with: .move(edge: .leading)))
+                    }
+                    Spacer(minLength: 0)
+                    JoystickPad { vector in
+                        session.updateJoystick(vector: vector)
+                    }
+                    .frame(width: 148, height: 148)
                 }
-                .frame(width: 148, height: 148)
-                .frame(maxWidth: .infinity, alignment: .trailing)
                 .transition(.scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity))
             }
 

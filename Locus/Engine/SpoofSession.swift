@@ -1,3 +1,4 @@
+import Combine
 import CoreLocation
 import Foundation
 import MapKit
@@ -72,6 +73,16 @@ enum SpoofStatus: Equatable {
     }
 }
 
+/// Live state of the joystick, for its readout.
+struct JoystickTelemetry: Equatable {
+    var speed: CLLocationSpeed = 0
+    /// Degrees clockwise from north; `nil` when the stick is centred.
+    var course: CLLocationDirection?
+    /// Metres covered since the joystick was switched on.
+    var distance: CLLocationDistance = 0
+    var isMoving: Bool { speed > 0.05 }
+}
+
 /// Live state of a route being driven, for the HUD.
 struct DriveTelemetry: Equatable {
     var speed: CLLocationSpeed = 0
@@ -112,6 +123,10 @@ final class SpoofSession: ObservableObject {
 
     /// Non-nil while a route is playing.
     @Published private(set) var telemetry: DriveTelemetry?
+    /// Non-nil while the joystick is on. The route HUD's smaller sibling: the
+    /// joystick moved you at a speed you set and never showed you either it or
+    /// how far you'd gone.
+    @Published private(set) var joystick: JoystickTelemetry?
     @Published private(set) var isRoutePaused = false
     /// Countdown before the first fix, when `drive.startDelaySeconds` is set.
     @Published private(set) var routeCountdown: Int?
@@ -129,14 +144,44 @@ final class SpoofSession: ObservableObject {
     private var joystickVector: CGVector = .zero
     private let locationKeeper = BackgroundKeepAlive()
 
+    /// Reverse-geocodes the pin so coordinates aren't the only thing on screen.
+    /// Owned here rather than by a view so a starred favourite can be named
+    /// after the place instead of its latitude.
+    let places = PlaceResolver()
+
     private let favoritesKey = "locus.favorites"
     private let recentsKey = "locus.recents"
+
+    private var cancellables = Set<AnyCancellable>()
 
     init() {
         drive = DriveProfile.load()
         favorites = SavedPlace.load(key: favoritesKey)
         recents = SavedPlace.load(key: recentsKey)
+
+        // A nested ObservableObject doesn't propagate: views watching the
+        // session would never redraw when an address resolves.
+        places.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
+
+    /// Sets the pin from a deliberate action — a map tap, a search result, a
+    /// favourite — and asks what's there.
+    ///
+    /// Separate from assigning `pin` because `apply` rewrites `pin` on every
+    /// simulated fix; routing that through a geocoder would mean a request per
+    /// second for the length of a route.
+    func setPin(_ coordinate: CLLocationCoordinate2D?) {
+        pin = coordinate
+        places.resolve(coordinate)
+    }
+
+    /// The address of the pin, when one has been resolved for where it is now.
+    var pinAddress: String? { places.address(for: pin) }
+
+    /// The address of the fix currently being simulated.
+    var simulatedAddress: String? { places.address(for: simulated) }
 
     var isSpoofing: Bool {
         if case .active = status { return true }
@@ -153,7 +198,7 @@ final class SpoofSession: ObservableObject {
             lastError = "Import an RPPairing file in Settings first."
             return
         }
-        pin = coordinate
+        setPin(coordinate)
         Task { [weak self] in
             guard let self else { return }
             guard await self.prepareTunnel() else { return }
@@ -246,6 +291,7 @@ final class SpoofSession: ObservableObject {
                 self.apply(start, pairing: pairing, markRecent: false)
             }
             self.joystickActive = true
+            self.joystick = JoystickTelemetry()
             self.joystickTimer?.invalidate()
             self.joystickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in
@@ -262,6 +308,7 @@ final class SpoofSession: ObservableObject {
     func stopJoystick() {
         joystickActive = false
         joystickVector = .zero
+        joystick = nil
         joystickTimer?.invalidate()
         joystickTimer = nil
     }
@@ -278,7 +325,15 @@ final class SpoofSession: ObservableObject {
     private func tickJoystick(pairing: PairingStore) {
         guard joystickActive, let current = simulated else { return }
         let magnitude = hypot(joystickVector.dx, joystickVector.dy)
-        guard magnitude > 0.08 else { return }
+
+        // Stick centred: still report, so the readout says "stopped" instead of
+        // freezing on the last speed it happened to be moving at.
+        guard magnitude > 0.08 else {
+            joystick?.speed = 0
+            joystick?.course = nil
+            return
+        }
+
         let nx = joystickVector.dx / magnitude
         let ny = -joystickVector.dy / magnitude
         let jitter = 1 + Double.random(in: -1...1) * drive.speedJitter
@@ -286,6 +341,11 @@ final class SpoofSession: ObservableObject {
         let dt = 0.25
         let meters = speed * dt
         let next = Geo.offset(current, east: nx * meters, north: ny * meters)
+
+        joystick?.speed = speed
+        joystick?.course = Geo.bearing(from: current, to: next)
+        joystick?.distance += meters
+
         apply(next, pairing: pairing, markRecent: false)
     }
 
@@ -312,6 +372,9 @@ final class SpoofSession: ObservableObject {
 
         cancelRoute()
         stopJoystick()
+        // The pin is about to move every second; an address for where it
+        // started would only go stale and mislead.
+        places.clear()
 
         let profile = drive
         let mode = travelMode
@@ -495,6 +558,11 @@ final class SpoofSession: ObservableObject {
     func suggestedFavoriteName(for coordinate: CLLocationCoordinate2D, fallback: String? = nil) -> String {
         if let fallback, !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // A resolved address beats every other guess here, and beats the
+        // coordinate label by a mile.
+        if let address = places.address(for: coordinate) {
+            return address
         }
         if let favorite = favorites.first(where: { $0.id == SavedPlace(name: "", latitude: coordinate.latitude, longitude: coordinate.longitude).id }),
            !Self.isGenericFavoriteName(favorite.name) {

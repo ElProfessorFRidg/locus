@@ -44,7 +44,14 @@ struct MapHomeView: View {
                     routeOverlays
                 }
                 .mapStyle(mapStyle)
-                .mapControlVisibility(.hidden)
+                // Declaring the two we want replaces the default set, so the
+                // built-in locate button stays gone (Locus has its own) while a
+                // rotated map still gets a compass to straighten it with.
+                .mapControls {
+                    MapCompass()
+                    MapScaleView()
+                }
+                .mapControlVisibility(.automatic)
                 .onTapGesture { point in
                     searchFocused = false
                     guard !suppressNextMapTap, !isDraggingPin else { return }
@@ -118,7 +125,7 @@ struct MapHomeView: View {
                     onRemove: {
                         suppressNextMapTap = true
                         withAnimation {
-                            session.pin = nil
+                            session.setPin(nil)
                             pinSelected = false
                         }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -133,7 +140,7 @@ struct MapHomeView: View {
                     },
                     onDragMoved: { globalPoint in
                         if let coord = proxy.convert(globalPoint, from: .global) {
-                            session.pin = coord
+                            session.setPin(coord)
                         }
                     },
                     onDragEnded: {
@@ -186,7 +193,7 @@ struct MapHomeView: View {
         if workspace.drawMode {
             workspace.drawnPath.append(coord)
         } else {
-            session.pin = coord
+            session.setPin(coord)
             pinPlaceName = nil
             pinSelected = false
         }
@@ -452,7 +459,7 @@ struct MapHomeView: View {
                let item = response.mapItems.first {
                 let coord = item.placemark.coordinate
                 let title = item.name ?? completion.title
-                session.pin = coord
+                session.setPin(coord)
                 pinPlaceName = title
                 position = .region(MKCoordinateRegion(
                     center: coord,
@@ -499,7 +506,7 @@ struct MapHomeView: View {
             )
             workspace.drawnPath.removeAll()
             if let first = coords.first {
-                session.pin = first
+                session.setPin(first)
             }
             focus(on: coords)
         } catch {
