@@ -101,22 +101,14 @@ final class TunnelController: ObservableObject {
 
     /// The embedded extension's bundle identifier, read from the `.appex` itself
     /// rather than assumed, so re-signing that rewrites bundle IDs still works.
-    static let providerBundleIdentifier: String? = {
-        guard let plugins = Bundle.main.builtInPlugInsURL,
-              let contents = try? FileManager.default.contentsOfDirectory(
-                  at: plugins,
-                  includingPropertiesForKeys: nil
-              ) else { return nil }
-
-        for url in contents where url.pathExtension == "appex" {
-            guard let bundle = Bundle(url: url),
-                  let info = bundle.infoDictionary?["NSExtension"] as? [String: Any],
-                  info["NSExtensionPointIdentifier"] as? String == "com.apple.networkextension.packet-tunnel"
-            else { continue }
-            return bundle.bundleIdentifier
-        }
-        return nil
-    }()
+    ///
+    /// Backed by a file-scope constant rather than a static on this `@MainActor`
+    /// class: it is read from `staticBlocker` and `isEmbedded`, which are
+    /// deliberately callable from anywhere, and a main-actor static read from a
+    /// nonisolated context is a warning today and an error under Swift 6.
+    nonisolated static var providerBundleIdentifier: String? {
+        embeddedPacketTunnelBundleIdentifier
+    }
 
     nonisolated static var isEmbedded: Bool { providerBundleIdentifier != nil }
 
@@ -514,6 +506,29 @@ final class TunnelController: ObservableObject {
         return results
     }
 }
+
+/// Bundle identifier of the embedded packet-tunnel extension, or nil when there
+/// isn't one (LiveContainer, or a build stripped of its plug-ins).
+///
+/// A global `let`, so Swift initialises it lazily and exactly once behind
+/// `swift_once` — the same "compute on first read, then free" behaviour a static
+/// would give, without inheriting the enclosing type's actor isolation.
+private let embeddedPacketTunnelBundleIdentifier: String? = {
+    guard let plugins = Bundle.main.builtInPlugInsURL,
+          let contents = try? FileManager.default.contentsOfDirectory(
+              at: plugins,
+              includingPropertiesForKeys: nil
+          ) else { return nil }
+
+    for url in contents where url.pathExtension == "appex" {
+        guard let bundle = Bundle(url: url),
+              let info = bundle.infoDictionary?["NSExtension"] as? [String: Any],
+              info["NSExtensionPointIdentifier"] as? String == "com.apple.networkextension.packet-tunnel"
+        else { continue }
+        return bundle.bundleIdentifier
+    }
+    return nil
+}()
 
 /// Resumes-once guard for the tunnel probe. `stateUpdateHandler` and the timeout
 /// race each other, and resuming a continuation twice is a crash rather than a

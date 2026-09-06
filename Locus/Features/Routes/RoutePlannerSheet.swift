@@ -247,6 +247,10 @@ struct RoutePlannerSheet: View {
             case .roadLimit:
                 let observed = route.expectedSpeed ?? session.travelMode.baseSpeed
                 return observed * (1 + profile.speedTolerance)
+            case .recorded:
+                // The recording's own average is exactly this estimate, and it
+                // is the one number here that isn't a guess.
+                return route.expectedSpeed ?? session.travelMode.baseSpeed
             }
         }()
         let effective = max(0.5, base * profile.traffic.meanFactor)

@@ -387,6 +387,8 @@ struct DriveProfile: Codable, Equatable, Identifiable {
             parts.append("Limit \(sign)\(Int((abs(speedTolerance) * 100).rounded()))%")
         case .fixed:
             parts.append("\(Int(fixedSpeed.rounded())) \(units.short)")
+        case .recorded:
+            parts.append("recorded pace")
         }
         if traffic != .none { parts.append(traffic.title.lowercased() + " traffic") }
         if timeScale != 1 { parts.append(String(format: "%.4g×", timeScale)) }

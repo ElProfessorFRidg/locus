@@ -62,6 +62,8 @@ struct StarterProfilesView: View {
             parts.append("\(Int(profile.fixedSpeed.rounded())) \(profile.units.short)")
         case .travelMode:
             parts.append("travel-mode pace")
+        case .recorded:
+            parts.append("recorded pace")
         }
 
         parts.append("\(profile.traffic.title.lowercased()) traffic")
