@@ -55,7 +55,19 @@ While a route plays, speed, the limit sign and progress appear on the **Lock Scr
 
 See [SETUP.md](SETUP.md) for full steps. Grab a prebuilt IPA from [Releases](https://github.com/ChrisMack32/Locus/releases), or build from source below.
 
-Every push to `main` publishes an unsigned IPA as a pre-release; tagging `v*` publishes a versioned one. CI fails the build if `LocusTunnel.appex` is missing from the IPA, so a release can't silently ship without the built-in tunnel.
+### Builds from CI
+
+Every push builds an unsigned IPA and publishes it to a **Release**, as the raw `.ipa` — not wrapped in a zip, so a sideloader can install it straight from the link.
+
+| Branch | Download |
+| --- | --- |
+| `main` | `https://github.com/ElProfessorFRidg/locus/releases/download/latest/Locus.ipa` |
+| any other branch | `.../releases/download/latest-<branch-with-dashes>/Locus.ipa` |
+| tagged `v*` | `.../releases/download/<tag>/Locus-<tag>.ipa` |
+
+Branch builds use a **rolling** release: the tag is replaced on every push, so the URL never changes and there's exactly one build to grab rather than a list to date-sort. Each run also prints its own download link in the Actions summary.
+
+CI fails the build if either extension is missing from the IPA, so a release can't silently ship without the built-in tunnel or the Live Activity.
 
 Bundle ID: `com.chrismack.locus`
 

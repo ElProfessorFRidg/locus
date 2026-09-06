@@ -1,10 +1,14 @@
 name: Build IPA
 
 on:
+  # Every branch, not just main: a branch you can't install from is a branch you
+  # can't test on a phone, and this app only really works on one.
+  #
+  # No `pull_request:` trigger — a PR from a branch in this repo would build the
+  # same commit twice, and the push event is the one that can publish.
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -12,8 +16,9 @@ permissions:
 
 concurrency:
   group: build-${{ github.ref }}
-  # Superseded PR builds are worth cancelling; a release build in flight is not.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A build in flight is publishing to a release; cancelling it mid-upload
+  # leaves that release without its .ipa.
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -117,52 +122,122 @@ jobs:
             || { echo "::error::Extension point is '$POINT', expected com.apple.networkextension.packet-tunnel"; exit 1; }
           echo "Extension point: $POINT"
 
+
+      # Name the file for what it is. A tagged release keeps its version in the
+      # filename; a branch build keeps a fixed name so its download URL never
+      # moves — see the rolling release below.
+      - name: Name the .ipa
+        id: artifact
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            NAME="Locus-${GITHUB_REF#refs/tags/}.ipa"
+          else
+            NAME="Locus.ipa"
+          fi
+          mv Locus-unsigned.ipa "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          ls -lh "$NAME"
+
+      # Kept alongside the Release as a fallback if publishing fails. Note that
+      # what you download from here IS wrapped in a second .zip by GitHub — the
+      # Release asset below is the raw .ipa.
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Locus-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}-unsigned
-          path: Locus-unsigned.ipa
+          name: Locus-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
+          path: ${{ steps.artifact.outputs.name }}
           retention-days: 30
           if-no-files-found: error
 
-      - name: Write release notes
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      - name: Decide where this build gets published
+        id: release
         env:
-          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
-        run: |
-          cat > release-notes.md <<EOF
-          Unsigned build of \`${SHORT_SHA}\`. Re-sign locally before installing — AltStore, SideStore, Feather, Sideloadly or ESign.
-
-          **About the built-in tunnel.** Signing it needs a **paid** Apple developer account: Apple doesn't grant \`packet-tunnel-provider\` to free ones. Re-signed with a free profile, Locus detects that at launch and points you at the [LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) app instead — it raises the same tunnel on 10.7.0.1 and everything else works the same.
-
-          Download \`Locus-unsigned.ipa\` directly below — no extra .zip wrapper.
-          EOF
-
-      # actions/upload-artifact always wraps its output in a second .zip for
-      # browser downloads. A Release attaches the .ipa directly — one download,
-      # one file, openable straight from the link on the phone.
-      - name: Publish as a GitHub Release
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-        env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           SHORT_SHA: ${{ steps.version.outputs.short_sha }}
         run: |
           set -euo pipefail
-          # Two explicit calls rather than building up an argument array: macOS
-          # still ships bash 3.2, where expanding an empty array under `set -u`
-          # is an unbound-variable error.
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            gh release create "$TAG" Locus-unsigned.ipa \
-              --title "Locus $TAG" \
-              --notes-file release-notes.md \
-              --repo "$GITHUB_REPOSITORY"
+            TITLE="Locus $TAG"
+            ROLLING=false
           else
-            TAG="build-$(date -u +%Y%m%d%H%M%S)-${SHORT_SHA}"
-            gh release create "$TAG" Locus-unsigned.ipa \
-              --title "Locus ${VERSION} build (${SHORT_SHA})" \
+            # One rolling release per branch, replaced on every push, so the
+            # download URL is stable and there is exactly one build to grab
+            # rather than a list to date-sort by hand.
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            SLUG=$(echo "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9]#-#g' | sed 's#--*#-#g' | sed 's#^-##;s#-$##')
+            if [[ "$BRANCH" == "main" ]]; then TAG="latest"; else TAG="latest-$SLUG"; fi
+            TITLE="Locus ${VERSION} — ${BRANCH} (${SHORT_SHA})"
+            ROLLING=true
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "rolling=$ROLLING" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        env:
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          FILE: ${{ steps.artifact.outputs.name }}
+        run: |
+          cat > release-notes.md <<EOF
+          Unsigned build of \`${SHORT_SHA}\` on \`${GITHUB_REF_NAME}\`. Re-sign before installing — AltStore, SideStore, Feather, Sideloadly or ESign.
+
+          Download **\`${FILE}\`** below. It is the raw \`.ipa\`, not a zip: sideloaders can open it straight from this link.
+
+          **About the built-in tunnel.** Signing it needs a **paid** Apple developer account — Apple doesn't grant \`packet-tunnel-provider\` to free ones. Re-signed with a free profile, Locus detects that at launch and points you at the [LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) app instead; it raises the same tunnel on 10.7.0.1 and everything else works the same.
+          EOF
+
+      # actions/upload-artifact always wraps its output in a second .zip for
+      # browser downloads. A Release attaches the .ipa directly — one file, one
+      # tap, installable from the link on the phone itself.
+      - name: Publish the .ipa to a Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          TITLE: ${{ steps.release.outputs.title }}
+          ROLLING: ${{ steps.release.outputs.rolling }}
+          FILE: ${{ steps.artifact.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          # A rolling tag has to move to this commit, and GitHub won't move a tag
+          # under an existing release — so the old one goes first. Delete then
+          # create, rather than edit, keeps the tag and the build in step.
+          if [[ "$ROLLING" == "true" ]] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
+          fi
+
+          if [[ "$ROLLING" == "true" ]]; then
+            gh release create "$TAG" "$FILE" \
+              --title "$TITLE" \
               --notes-file release-notes.md \
               --repo "$GITHUB_REPOSITORY" \
               --prerelease
+          else
+            gh release create "$TAG" "$FILE" \
+              --title "$TITLE" \
+              --notes-file release-notes.md \
+              --repo "$GITHUB_REPOSITORY"
           fi
+
+      # The point of a stable tag is a link you can bookmark. Print it where the
+      # run already is, so it needn't be reconstructed from the branch name.
+      - name: Show the download link
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          FILE: ${{ steps.artifact.outputs.name }}
+        run: |
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${FILE}"
+          {
+            echo "## Install"
+            echo
+            echo "Direct \`.ipa\` (no zip):"
+            echo
+            echo "\`\`\`"
+            echo "$URL"
+            echo "\`\`\`"
+            echo
+            echo "Release page: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL"
