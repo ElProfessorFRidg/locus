@@ -115,11 +115,19 @@ final class SpoofSession: ObservableObject {
     @Published var favorites: [SavedPlace] = []
     @Published var recents: [SavedPlace] = []
 
-    /// Everything about how a route is driven. Persisted on every change so the
-    /// sheet can bind straight to it.
+    /// The active driving profile — a working copy of whichever one is selected
+    /// in `profiles`. Views bind straight to it; every change is written back to
+    /// the named list, so there is no save step to forget.
     @Published var drive: DriveProfile {
-        didSet { if drive != oldValue { drive.save() } }
+        didSet {
+            guard drive != oldValue else { return }
+            profiles.update(drive)
+        }
     }
+
+    /// Named driving profiles. Switching between them beats retuning thirty
+    /// parameters every time the kind of journey changes.
+    let profiles: DriveProfileStore
 
     /// Non-nil while a route is playing.
     @Published private(set) var telemetry: DriveTelemetry?
@@ -154,16 +162,34 @@ final class SpoofSession: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// Shared so App Intents — which run in this process but outside the view
+    /// hierarchy — can reach the same session the UI is showing.
+    static let shared = SpoofSession()
+
     init() {
-        drive = DriveProfile.load()
+        // Built locally first: `drive` is a working copy of the store's active
+        // profile, and Swift wants every stored property set before `self` is
+        // touched.
+        let store = DriveProfileStore()
+        profiles = store
+        drive = store.active
         favorites = SavedPlace.load(key: favoritesKey)
         recents = SavedPlace.load(key: recentsKey)
 
-        // A nested ObservableObject doesn't propagate: views watching the
-        // session would never redraw when an address resolves.
-        places.objectWillChange
-            .sink { [weak self] in self?.objectWillChange.send() }
-            .store(in: &cancellables)
+        // Nested ObservableObjects don't propagate: views watching the session
+        // would never redraw when an address resolves or a profile is renamed.
+        for nested in [places.objectWillChange, profiles.objectWillChange] as [ObservableObjectPublisher] {
+            nested
+                .sink { [weak self] in self?.objectWillChange.send() }
+                .store(in: &cancellables)
+        }
+    }
+
+    /// Switches the active profile, replacing the live working copy.
+    func selectProfile(_ id: UUID) {
+        guard let profile = profiles.profile(id) else { return }
+        profiles.select(id)
+        drive = profile
     }
 
     /// Sets the pin from a deliberate action — a map tap, a search result, a
@@ -359,7 +385,8 @@ final class SpoofSession: ObservableObject {
     func startRoute(
         _ coordinates: [CLLocationCoordinate2D],
         pairing: PairingStore,
-        expectedSpeed: CLLocationSpeed? = nil
+        expectedSpeed: CLLocationSpeed? = nil,
+        name: String = "Route"
     ) {
         guard pairing.hasPairingFile else {
             lastError = "Import an RPPairing file in Settings first."
@@ -390,7 +417,16 @@ final class SpoofSession: ObservableObject {
         }
 
         isRoutePaused = false
-        telemetry = DriveTelemetry(totalDistance: basePlan.totalDistance)
+        let opening = DriveTelemetry(totalDistance: basePlan.totalDistance)
+        telemetry = opening
+
+        if profile.showLiveActivity {
+            LiveActivityController.shared.start(
+                routeName: name,
+                profileName: profile.name,
+                state: Self.activityState(for: opening, profile: profile, paused: false)
+            )
+        }
 
         routeGeneration += 1
         let generation = routeGeneration
@@ -415,6 +451,7 @@ final class SpoofSession: ObservableObject {
         telemetry = nil
         isRoutePaused = false
         routeCountdown = nil
+        LiveActivityController.shared.end()
     }
 
     func pauseRoute() { isRoutePaused = true }
@@ -422,6 +459,13 @@ final class SpoofSession: ObservableObject {
 
     func toggleRoutePause() {
         isRoutePaused.toggle()
+        // Pausing is one of the few changes worth an immediate Live Activity
+        // push rather than waiting out the throttle.
+        if let telemetry, drive.showLiveActivity {
+            LiveActivityController.shared.update(
+                Self.activityState(for: telemetry, profile: drive, paused: isRoutePaused)
+            )
+        }
     }
 
     func cancelRoute() {
@@ -431,6 +475,7 @@ final class SpoofSession: ObservableObject {
         telemetry = nil
         isRoutePaused = false
         routeCountdown = nil
+        LiveActivityController.shared.end()
     }
 
     private func countDown(seconds: Double) async {
@@ -481,6 +526,14 @@ final class SpoofSession: ObservableObject {
                     UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.4)
                 }
 
+                if profile.showLiveActivity, let telemetry {
+                    // Throttled inside the controller: a route emits fixes far
+                    // faster than ActivityKit's update budget allows.
+                    LiveActivityController.shared.update(
+                        Self.activityState(for: telemetry, profile: profile, paused: isRoutePaused)
+                    )
+                }
+
                 try? await Task.sleep(nanoseconds: realInterval)
             }
 
@@ -505,6 +558,31 @@ final class SpoofSession: ObservableObject {
                 continue
             }
         }
+    }
+
+    /// Formats telemetry for the Live Activity.
+    ///
+    /// The widget receives text, not numbers: it is a separate module, and
+    /// giving it `DriveProfile` and `SpeedUnit` just to render "48 km/h" would
+    /// drag half the engine over a target boundary and split unit handling in
+    /// two.
+    private static func activityState(
+        for telemetry: DriveTelemetry,
+        profile: DriveProfile,
+        paused: Bool
+    ) -> DriveActivityAttributes.ContentState {
+        let unit = profile.units
+        return DriveActivityAttributes.ContentState(
+            speed: "\(Int(unit.fromMetresPerSecond(telemetry.speed).rounded()))",
+            unit: unit.short,
+            limit: telemetry.speedLimit.map { "\(Int(unit.fromMetresPerSecond($0).rounded()))" },
+            progress: telemetry.progress,
+            remaining: DriveFormat.distance(telemetry.distanceRemaining) + " left",
+            eta: DriveFormat.eta(telemetry: telemetry, timeScale: profile.timeScale),
+            isPaused: paused,
+            isStopped: telemetry.isStopped,
+            isOverLimit: telemetry.isOverLimit && profile.warnWhenOverLimit
+        )
     }
 
     /// Fuel and CO₂ for a distance driven. Garnish — it is the profile's flat

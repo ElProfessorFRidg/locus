@@ -71,7 +71,12 @@ struct SettingsView: View {
                     .environmentObject(pairing)
             }
             .sheet(isPresented: $showDriveSettings) {
-                DriveSettingsView(profile: $session.drive, mode: session.travelMode)
+                DriveSettingsView(
+                    profile: $session.drive,
+                    mode: session.travelMode,
+                    store: session.profiles,
+                    onSelect: { session.selectProfile($0) }
+                )
             }
             .sheet(isPresented: $showDiagnostics) {
                 TunnelDiagnosticsView()

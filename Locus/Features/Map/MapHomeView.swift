@@ -485,7 +485,8 @@ struct MapHomeView: View {
         session.startRoute(
             workspace.activeCoordinates,
             pairing: pairing,
-            expectedSpeed: workspace.activeExpectedSpeed
+            expectedSpeed: workspace.activeExpectedSpeed,
+            name: workspace.selectedRoute?.name ?? "Route"
         )
     }
 

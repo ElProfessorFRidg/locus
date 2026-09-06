@@ -37,6 +37,9 @@ final class PairingStore: ObservableObject {
 
     var pairingPath: String { pairingURL.path }
 
+    /// Shared so App Intents can check pairing without a view hierarchy.
+    static let shared = PairingStore()
+
     init() {
         refresh()
     }

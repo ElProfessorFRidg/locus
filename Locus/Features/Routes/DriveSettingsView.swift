@@ -8,9 +8,17 @@ import SwiftUI
 struct DriveSettingsView: View {
     @Binding var profile: DriveProfile
     let mode: TravelMode
+    /// Present when the caller has a profile list to switch between; the sheet
+    /// still works on a lone binding without one.
+    var store: DriveProfileStore?
+    var onSelect: ((UUID) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var showResetConfirm = false
+    @State private var showDeleteConfirm = false
+    @State private var renaming = false
+    @State private var draftName = ""
+    @State private var showStarters = false
 
     /// Sample limits used for the live "what this actually means" preview.
     private var previewLimits: [Double] {
@@ -20,6 +28,7 @@ struct DriveSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let store { profileSection(store) }
                 speedSection
                 if profile.speedSource == .roadLimit { toleranceSection }
                 vehicleSection
@@ -41,9 +50,88 @@ struct DriveSettingsView: View {
                 isPresented: $showResetConfirm,
                 titleVisibility: .visible
             ) {
-                Button("Reset", role: .destructive) { profile = DriveProfile() }
+                // Keeps the identity so the reset lands on this profile rather
+                // than orphaning it and creating a nameless new one.
+                Button("Reset", role: .destructive) {
+                    var fresh = DriveProfile()
+                    fresh.id = profile.id
+                    fresh.name = profile.name
+                    profile = fresh
+                }
                 Button("Cancel", role: .cancel) {}
             }
+            .confirmationDialog(
+                "Delete “\(profile.name)”?",
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    guard let store else { return }
+                    let id = profile.id
+                    store.delete(id)
+                    onSelect?(store.activeID)
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Rename profile", isPresented: $renaming) {
+                TextField("Name", text: $draftName)
+                Button("Cancel", role: .cancel) {}
+                Button("Save") {
+                    store?.rename(profile.id, to: draftName)
+                    if let renamed = store?.profile(profile.id) { profile.name = renamed.name }
+                }
+            }
+            .sheet(isPresented: $showStarters) {
+                if let store {
+                    StarterProfilesView(store: store) { id in
+                        showStarters = false
+                        onSelect?(id)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Profiles
+
+    private func profileSection(_ store: DriveProfileStore) -> some View {
+        Section {
+            Picker("Profile", selection: Binding(
+                get: { profile.id },
+                set: { onSelect?($0) }
+            )) {
+                ForEach(store.profiles) { candidate in
+                    Text(candidate.name).tag(candidate.id)
+                }
+            }
+
+            Menu {
+                Button("Rename…", systemImage: "pencil") {
+                    draftName = profile.name
+                    renaming = true
+                }
+                Button("Duplicate", systemImage: "plus.square.on.square") {
+                    let copy = store.duplicate(profile)
+                    onSelect?(copy.id)
+                }
+                Button("New blank profile", systemImage: "plus") {
+                    let fresh = store.add(named: "New profile")
+                    onSelect?(fresh.id)
+                }
+                Button("Add a ready-made one…", systemImage: "sparkles") {
+                    showStarters = true
+                }
+                Divider()
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    showDeleteConfirm = true
+                }
+            } label: {
+                Label("Manage profiles", systemImage: "square.stack.3d.up")
+            }
+        } header: {
+            Text("Profile")
+        } footer: {
+            Text("A commute and a walk in the park want opposite settings. Keep one of each and switch, instead of retuning thirty sliders.")
         }
     }
 
@@ -401,6 +489,7 @@ struct DriveSettingsView: View {
     private var gadgetSection: some View {
         Section {
             Toggle("Speedometer over the map", isOn: $profile.showHUD)
+            Toggle("Lock Screen Live Activity", isOn: $profile.showLiveActivity)
             Toggle("Warn when over the limit", isOn: $profile.warnWhenOverLimit)
             Toggle("Haptic when speeding", isOn: $profile.hapticOnLimitChange)
             Toggle("Trip fuel & CO₂", isOn: $profile.showTripEconomy)
@@ -415,7 +504,7 @@ struct DriveSettingsView: View {
         } header: {
             Text("Extras")
         } footer: {
-            Text("The fuel figure is your consumption times the distance — a garnish on the trip summary, not something the simulation measured.")
+            Text("The Live Activity keeps speed and progress on the Lock Screen while a route plays, so it doesn't need the app open. The fuel figure is your consumption times the distance — a garnish on the trip summary, not something the simulation measured.")
         }
     }
 

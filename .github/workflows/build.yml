@@ -104,7 +104,10 @@ jobs:
           grep -q "Payload/Locus.app/PlugIns/LocusTunnel.appex/LocusTunnel$" <<< "$CONTENTS" \
             || { echo "::error::LocusTunnel.appex missing — this build would have no built-in tunnel"; exit 1; }
 
-          echo "App binary and tunnel extension both present."
+          grep -q "Payload/Locus.app/PlugIns/LocusWidgets.appex/LocusWidgets$" <<< "$CONTENTS" \
+            || { echo "::error::LocusWidgets.appex missing — no Live Activity in this build"; exit 1; }
+
+          echo "App binary and both extensions present."
 
           # The extension is useless without its packet-tunnel extension point.
           PLIST="Payload/Locus.app/PlugIns/LocusTunnel.appex/Info.plist"

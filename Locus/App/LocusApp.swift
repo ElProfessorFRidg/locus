@@ -2,8 +2,11 @@ import SwiftUI
 
 @main
 struct LocusApp: App {
-    @StateObject private var session = SpoofSession()
-    @StateObject private var pairing = PairingStore()
+    // Shared instances rather than fresh ones: App Intents run in this process
+    // but outside the view hierarchy, and need to reach the same session and
+    // pairing store the UI is showing.
+    @StateObject private var session = SpoofSession.shared
+    @StateObject private var pairing = PairingStore.shared
     @AppStorage(SetupGate.defaultsKey) private var setupComplete = false
     @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
 

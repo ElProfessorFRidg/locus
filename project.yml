@@ -30,6 +30,8 @@ targets:
       # target separately — they are different modules, so this is the standard
       # way to share source between an app and its extension.
       - path: LocusTunnel/Shared
+      # Same again for the widget extension: the Live Activity's shape.
+      - path: Shared
       - path: AppIcon.icon
       - path: Vendor/idevice/module.modulemap
         buildPhase: none
@@ -37,6 +39,9 @@ targets:
         buildPhase: none
     dependencies:
       - target: LocusTunnel
+        embed: true
+        codeSign: true
+      - target: LocusWidgets
         embed: true
         codeSign: true
     settings:
@@ -85,6 +90,29 @@ targets:
         PRODUCT_NAME: LocusTunnel
         INFOPLIST_FILE: LocusTunnel/Info.plist
         CODE_SIGN_ENTITLEMENTS: LocusTunnel/LocusTunnel.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: false
+        SKIP_INSTALL: YES
+        ENABLE_BITCODE: NO
+        SUPPORTS_MACCATALYST: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+
+  # Live Activity for a route in progress. Unlike the tunnel, a widget extension
+  # needs no special entitlement, so this one survives a free-account re-sign.
+  LocusWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: LocusWidgets
+        excludes:
+          - "**/Info.plist"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus.widgets
+        PRODUCT_NAME: LocusWidgets
+        INFOPLIST_FILE: LocusWidgets/Info.plist
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
         GENERATE_INFOPLIST_FILE: false

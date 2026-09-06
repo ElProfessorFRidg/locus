@@ -246,7 +246,12 @@ enum VehiclePreset: String, Codable, CaseIterable, Identifiable {
 ///   generated: traffic, junction stops, GPS scatter, staying in a lane.
 ///
 /// Everything persists to `UserDefaults` as one JSON blob.
-struct DriveProfile: Codable, Equatable {
+struct DriveProfile: Codable, Equatable, Identifiable {
+
+    // MARK: Identity
+
+    var id = UUID()
+    var name: String = "Default"
 
     // MARK: Speed
 
@@ -327,6 +332,10 @@ struct DriveProfile: Codable, Equatable {
     /// Live speedometer over the map.
     var showHUD: Bool = true
 
+    /// Speed and progress on the Lock Screen and in the Dynamic Island, so a
+    /// route running in a pocket doesn't need the app opened to check on.
+    var showLiveActivity: Bool = true
+
     /// Haptic tap when the estimated limit changes.
     var hapticOnLimitChange: Bool = false
 
@@ -359,6 +368,9 @@ struct DriveProfile: Codable, Equatable {
     /// Human-readable summary for the collapsed row in the route sheet.
     func summary(for mode: TravelMode) -> String {
         var parts: [String] = []
+        // Worth leading with once there are several profiles; "Default" says
+        // nothing, so it stays out of the way.
+        if name != "Default", !name.isEmpty { parts.append(name) }
         switch speedSource {
         case .travelMode:
             parts.append(mode.title)
@@ -404,6 +416,10 @@ struct DriveProfile: Codable, Equatable {
 
     init() {}
 
+    init(name: String) {
+        self.name = name
+    }
+
     /// Decodes field by field, falling back to the default for anything absent.
     ///
     /// Synthesised `Codable` throws if a single key is missing, and `load()`
@@ -418,6 +434,11 @@ struct DriveProfile: Codable, Equatable {
         func value<T: Decodable>(_ key: CodingKeys, _ whenAbsent: T) -> T {
             (try? container.decode(T.self, forKey: key)) ?? whenAbsent
         }
+
+        // A profile stored before these existed gets a fresh id, which is what
+        // makes the migration in DriveProfileStore work at all.
+        id = value(.id, UUID())
+        name = value(.name, fallback.name)
 
         speedSource = value(.speedSource, fallback.speedSource)
         speedTolerance = value(.speedTolerance, fallback.speedTolerance)
@@ -446,28 +467,13 @@ struct DriveProfile: Codable, Equatable {
         startDelaySeconds = value(.startDelaySeconds, fallback.startDelaySeconds)
 
         showHUD = value(.showHUD, fallback.showHUD)
+        showLiveActivity = value(.showLiveActivity, fallback.showLiveActivity)
         hapticOnLimitChange = value(.hapticOnLimitChange, fallback.hapticOnLimitChange)
         warnWhenOverLimit = value(.warnWhenOverLimit, fallback.warnWhenOverLimit)
         consumption = value(.consumption, fallback.consumption)
         showTripEconomy = value(.showTripEconomy, fallback.showTripEconomy)
     }
 
-    // MARK: - Persistence
-
-    private static let defaultsKey = "locus.driveProfile"
-
-    static func load() -> DriveProfile {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode(DriveProfile.self, from: data) else {
-            return DriveProfile()
-        }
-        return decoded
-    }
-
-    func save() {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
-    }
 }
 
 /// `ClosedRange` is `Codable` but not editable field-by-field from SwiftUI
