@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 enum LocusTheme {
@@ -11,6 +12,24 @@ enum LocusTheme {
 
     /// Speed-limit sign red, for the HUD ring when you're over the limit.
     static let overLimit = Color(red: 0.94, green: 0.27, blue: 0.27)
+
+    /// Colour for a stretch of road carrying `limit` (m/s), on a scale running
+    /// from residential to motorway.
+    ///
+    /// Teal → green → amber → orange, which reads as "slow to fast" without
+    /// anyone needing the legend, and stays distinguishable on both the standard
+    /// and satellite map styles.
+    static func speedColor(forLimit limit: CLLocationSpeed, unit: SpeedUnit) -> Color {
+        let ladder = unit.speedLadder
+        guard let slowest = ladder.first, let fastest = ladder.last, fastest > slowest else {
+            return accent
+        }
+        let value = unit.fromMetresPerSecond(limit)
+        let t = ((value - slowest) / (fastest - slowest)).clamped(to: 0...1)
+        // 0.47 (teal) down to 0.06 (orange-red). Saturation lifts slightly with
+        // speed so the fast end reads as emphatic rather than merely different.
+        return Color(hue: 0.47 - 0.41 * t, saturation: 0.62 + 0.24 * t, brightness: 0.95)
+    }
 }
 
 enum LocusMetrics {

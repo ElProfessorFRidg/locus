@@ -129,6 +129,9 @@ final class SpoofSession: ObservableObject {
     /// parameters every time the kind of journey changes.
     let profiles: DriveProfileStore
 
+    /// Saved routes, and where an interrupted one got to.
+    let routeStore = RouteStore()
+
     /// Non-nil while a route is playing.
     @Published private(set) var telemetry: DriveTelemetry?
     /// Non-nil while the joystick is on. The route HUD's smaller sibling: the
@@ -178,7 +181,11 @@ final class SpoofSession: ObservableObject {
 
         // Nested ObservableObjects don't propagate: views watching the session
         // would never redraw when an address resolves or a profile is renamed.
-        for nested in [places.objectWillChange, profiles.objectWillChange] as [ObservableObjectPublisher] {
+        for nested in [
+            places.objectWillChange,
+            profiles.objectWillChange,
+            routeStore.objectWillChange,
+        ] as [ObservableObjectPublisher] {
             nested
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
@@ -386,7 +393,10 @@ final class SpoofSession: ObservableObject {
         _ coordinates: [CLLocationCoordinate2D],
         pairing: PairingStore,
         expectedSpeed: CLLocationSpeed? = nil,
-        name: String = "Route"
+        name: String = "Route",
+        overrides: [LimitOverride] = [],
+        recordedSpeed: ((CLLocationDistance) -> CLLocationSpeed)? = nil,
+        startingAt startDistance: CLLocationDistance = 0
     ) {
         guard pairing.hasPairingFile else {
             lastError = "Import an RPPairing file in Settings first."
@@ -409,7 +419,9 @@ final class SpoofSession: ObservableObject {
             coordinates: coordinates,
             profile: profile,
             mode: mode,
-            routeExpectedSpeed: expectedSpeed
+            routeExpectedSpeed: expectedSpeed,
+            overrides: overrides,
+            recordedSpeed: recordedSpeed
         )
         guard !basePlan.isEmpty else {
             lastError = "That route is too short to drive."
@@ -439,7 +451,22 @@ final class SpoofSession: ObservableObject {
             }
             await self.countDown(seconds: profile.startDelaySeconds)
             if !Task.isCancelled {
-                await self.run(plan: basePlan, profile: profile, pairing: pairing)
+                await self.run(
+                    plan: basePlan,
+                    profile: profile,
+                    pairing: pairing,
+                    resume: RouteResumeState(
+                        routeName: name,
+                        coordinates: coordinates.codable,
+                        expectedTravelTime: expectedSpeed.map { basePlan.totalDistance / max($0, 0.1) } ?? 0,
+                        distance: basePlan.totalDistance,
+                        overrides: overrides,
+                        travelled: 0,
+                        lap: 1,
+                        profileID: profile.id
+                    ),
+                    startDistance: startDistance
+                )
             }
             self.finishRoute(generation: generation)
         }
@@ -452,6 +479,8 @@ final class SpoofSession: ObservableObject {
         isRoutePaused = false
         routeCountdown = nil
         LiveActivityController.shared.end()
+        // A route that reached its end has nothing left to resume.
+        routeStore.clearResume()
     }
 
     func pauseRoute() { isRoutePaused = true }
@@ -468,7 +497,12 @@ final class SpoofSession: ObservableObject {
         }
     }
 
-    func cancelRoute() {
+    /// Stops the drive.
+    ///
+    /// - Parameter keepResumePoint: a deliberate stop discards where it got to;
+    ///   starting a different route also does. The progress file is only there
+    ///   for the drive nobody chose to end.
+    func cancelRoute(keepResumePoint: Bool = false) {
         routeGeneration += 1
         routeTask?.cancel()
         routeTask = nil
@@ -476,6 +510,24 @@ final class SpoofSession: ObservableObject {
         isRoutePaused = false
         routeCountdown = nil
         LiveActivityController.shared.end()
+        if !keepResumePoint { routeStore.clearResume() }
+    }
+
+    /// Picks an interrupted drive back up from where the progress file says it
+    /// stopped.
+    func resumeSavedRoute(pairing: PairingStore) {
+        guard let state = routeStore.resumable else { return }
+        if let profileID = state.profileID, profileID != drive.id {
+            selectProfile(profileID)
+        }
+        startRoute(
+            state.coordinates.clLocations,
+            pairing: pairing,
+            expectedSpeed: state.built.expectedSpeed,
+            name: state.routeName,
+            overrides: state.overrides,
+            startingAt: state.travelled
+        )
     }
 
     private func countDown(seconds: Double) async {
@@ -490,16 +542,25 @@ final class SpoofSession: ObservableObject {
     }
 
     /// One pass over `plan`, repeated or reversed per `endBehavior`.
-    private func run(plan: RoutePlan, profile: DriveProfile, pairing: PairingStore) async {
+    private func run(
+        plan: RoutePlan,
+        profile: DriveProfile,
+        pairing: PairingStore,
+        resume template: RouteResumeState,
+        startDistance: CLLocationDistance
+    ) async {
         let dt = profile.updateInterval
         let scale = max(0.05, profile.timeScale)
         let realInterval = UInt64((dt / scale) * 1_000_000_000)
 
         var current = plan
         var lap = 1
+        var offset = startDistance
+        var lastProgressWrite = Date.distantPast
 
         while !Task.isCancelled {
-            let walker = DriveWalker(plan: current, profile: profile)
+            let walker = DriveWalker(plan: current, profile: profile, startDistance: offset)
+            offset = 0
 
             while !Task.isCancelled, let fix = walker.step(dt: dt) {
                 while isRoutePaused, !Task.isCancelled {
@@ -532,6 +593,17 @@ final class SpoofSession: ObservableObject {
                     LiveActivityController.shared.update(
                         Self.activityState(for: telemetry, profile: profile, paused: isRoutePaused)
                     )
+                }
+
+                // Written every few seconds rather than on a clean exit, so a
+                // crash or a swipe-away can still be picked up where it left off.
+                if Date().timeIntervalSince(lastProgressWrite) >= 5 {
+                    lastProgressWrite = Date()
+                    var state = template
+                    state.travelled = fix.distanceTravelled
+                    state.lap = lap
+                    state.savedAt = Date()
+                    routeStore.recordProgress(state)
                 }
 
                 try? await Task.sleep(nanoseconds: realInterval)

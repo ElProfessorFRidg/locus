@@ -47,14 +47,20 @@ enum SpeedSource: String, Codable, CaseIterable, Identifiable {
     case roadLimit
     /// Exactly `fixedSpeed`, traffic and corners aside.
     case fixed
+    /// The pace an imported GPX track was actually recorded at, stops included.
+    case recorded
 
     var id: String { rawValue }
+
+    /// Only offered when the loaded route has timestamps to replay.
+    static var selectable: [SpeedSource] { [.travelMode, .roadLimit, .fixed] }
 
     var title: String {
         switch self {
         case .travelMode: return "Travel mode"
         case .roadLimit: return "Road limit"
         case .fixed: return "Fixed speed"
+        case .recorded: return "As recorded"
         }
     }
 
@@ -66,6 +72,8 @@ enum SpeedSource: String, Codable, CaseIterable, Identifiable {
             return "Estimates each road's limit from the route's own pace and shape, then applies your tolerance."
         case .fixed:
             return "Holds the speed you set, still slowing for corners and traffic."
+        case .recorded:
+            return "Replays the imported track at the pace it was recorded at, including where it stopped."
         }
     }
 }

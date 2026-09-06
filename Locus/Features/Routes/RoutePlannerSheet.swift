@@ -14,14 +14,19 @@ struct RoutePlannerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showDriveSettings = false
+    @State private var saving = false
+    @State private var draftName = ""
 
     var body: some View {
         NavigationStack {
             Form {
+                if let resumable = session.routeStore.resumable { resumeSection(resumable) }
                 endpointsSection
                 if !workspace.routes.isEmpty { routesSection }
                 drivingSection
+                if !workspace.stretches.isEmpty, workspace.previewUsesLimits { limitsSection }
                 playSection
+                savedSection
                 pathSection
             }
             .navigationTitle("Route")
@@ -247,6 +252,152 @@ struct RoutePlannerSheet: View {
         let effective = max(0.5, base * profile.traffic.meanFactor)
         let seconds = route.distance / effective / max(0.05, profile.timeScale)
         return " · about " + DriveFormat.clock(seconds) + " to play"
+    }
+
+    // MARK: - Resume
+
+    /// A drive that was interrupted rather than finished.
+    ///
+    /// The progress file is written every few seconds while a route plays, so
+    /// this survives a crash or a swipe-away — the two cases where losing forty
+    /// minutes of a route was most annoying.
+    private func resumeSection(_ state: RouteResumeState) -> some View {
+        Section {
+            Button {
+                session.resumeSavedRoute(pairing: PairingStore.shared)
+                dismiss()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(LocusTheme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Resume “\(state.routeName)”")
+                            .foregroundStyle(.primary)
+                        Text("\(DriveFormat.distance(state.travelled)) of \(DriveFormat.distance(state.distance)) done")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button("Discard it", role: .destructive) {
+                session.routeStore.clearResume()
+            }
+        } header: {
+            Text("Unfinished drive")
+        }
+    }
+
+    // MARK: - Limits
+
+    /// The route's estimated limits, stretch by stretch, each correctable.
+    ///
+    /// Correcting from a list rather than by tapping the map is deliberate: a
+    /// 6-point line is a hard target on a phone, and this also shows the whole
+    /// route's estimate at once, which is where a wrong one is easiest to spot.
+    private var limitsSection: some View {
+        Section {
+            ForEach(workspace.stretches) { stretch in
+                LimitStretchRow(
+                    stretch: stretch,
+                    unit: session.drive.units,
+                    override: workspace.override(for: stretch),
+                    onChange: { workspace.setOverride($0, for: stretch) }
+                )
+            }
+
+            if !workspace.overrides.isEmpty {
+                Button("Clear \(workspace.overrides.count) correction\(workspace.overrides.count == 1 ? "" : "s")", role: .destructive) {
+                    workspace.clearOverrides()
+                }
+            }
+        } header: {
+            Text("Speed limits along the way")
+        } footer: {
+            Text("Estimated from the road's shape and the pace Apple expects — MapKit publishes no posted limits. Where it's wrong, set it here and the drive uses your number instead. Colours on the map match.")
+        }
+    }
+
+    // MARK: - Saved routes
+
+    private var savedSection: some View {
+        Section {
+            Button {
+                draftName = workspace.selectedRoute?.name ?? "Route"
+                saving = true
+            } label: {
+                Label(
+                    workspace.savedRouteID == nil ? "Save this route" : "Save a copy",
+                    systemImage: "square.and.arrow.down.on.square"
+                )
+            }
+            .disabled(workspace.selectedRoute == nil)
+
+            if let id = workspace.savedRouteID, !workspace.overrides.isEmpty {
+                Button {
+                    session.routeStore.updateOverrides(workspace.overrides, for: id)
+                } label: {
+                    Label("Update its saved corrections", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+
+            ForEach(session.routeStore.routes) { saved in
+                Button {
+                    workspace.adopt(saved: saved)
+                    onFocus(saved.coordinates.clLocations)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(saved.name).foregroundStyle(.primary)
+                            Text(savedSubtitle(saved))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if workspace.savedRouteID == saved.id {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(LocusTheme.accent)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        session.routeStore.delete(saved.id)
+                    } label: {
+                        Label("Delete", systemImage: "trash.fill")
+                    }
+                }
+            }
+        } header: {
+            Text("Saved routes")
+        } footer: {
+            if session.routeStore.routes.isEmpty {
+                Text("A commute you drive every morning is worth keeping — corrections and all.")
+            }
+        }
+        .alert("Save route", isPresented: $saving) {
+            TextField("Name", text: $draftName)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                guard let route = workspace.selectedRoute else { return }
+                session.routeStore.save(route, named: draftName, overrides: workspace.overrides)
+            }
+        }
+    }
+
+    private func savedSubtitle(_ saved: SavedRoute) -> String {
+        var parts = [DriveFormat.distance(saved.distance)]
+        if !saved.overrides.isEmpty {
+            parts.append("\(saved.overrides.count) correction\(saved.overrides.count == 1 ? "" : "s")")
+        }
+        parts.append(saved.createdAt.formatted(date: .abbreviated, time: .omitted))
+        return parts.joined(separator: " · ")
     }
 
     // MARK: - Paths

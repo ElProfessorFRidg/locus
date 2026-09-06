@@ -59,6 +59,84 @@ struct RoutePlan {
 
     var isEmpty: Bool { points.count < 2 }
 
+    /// A run of the route carrying one limit.
+    ///
+    /// The plan has a point every 8 m, which is the right resolution for
+    /// driving and hopeless for showing someone: "the limit here" is a property
+    /// of a stretch of road, not of a sample. Grouping gives both the coloured
+    /// overlay and the list you correct a limit from.
+    struct Stretch: Identifiable, Equatable {
+        let id: Int
+        let coordinates: [CLLocationCoordinate2D]
+        let limit: CLLocationSpeed
+        let startDistance: CLLocationDistance
+        let endDistance: CLLocationDistance
+
+        var length: CLLocationDistance { endDistance - startDistance }
+
+        static func == (lhs: Stretch, rhs: Stretch) -> Bool {
+            lhs.id == rhs.id && lhs.limit == rhs.limit
+                && lhs.startDistance == rhs.startDistance && lhs.endDistance == rhs.endDistance
+        }
+    }
+
+    /// Consecutive points sharing a limit, with short runs folded into their
+    /// neighbour — a 20 m blip between two 90 stretches is sampling noise, not
+    /// a road anyone would describe.
+    func stretches(minimumLength: CLLocationDistance = 120) -> [Stretch] {
+        guard points.count > 1 else { return [] }
+
+        var groups: [(limit: CLLocationSpeed, from: Int, to: Int)] = []
+        for (index, point) in points.enumerated() {
+            if var last = groups.last, abs(last.limit - point.limit) < 0.01 {
+                last.to = index
+                groups[groups.count - 1] = last
+            } else {
+                groups.append((point.limit, index, index))
+            }
+        }
+
+        // Fold anything too short into whichever neighbour it is closer to in
+        // speed, repeatedly, until only real stretches remain.
+        var changed = true
+        while changed, groups.count > 1 {
+            changed = false
+            for index in groups.indices where
+                points[groups[index].to].distance - points[groups[index].from].distance < minimumLength {
+                let previous = index > 0 ? groups[index - 1] : nil
+                let next = index < groups.count - 1 ? groups[index + 1] : nil
+                guard previous != nil || next != nil else { break }
+
+                let mergeWithPrevious: Bool
+                switch (previous, next) {
+                case (nil, _): mergeWithPrevious = false
+                case (_, nil): mergeWithPrevious = true
+                case let (p?, n?):
+                    mergeWithPrevious = abs(p.limit - groups[index].limit) <= abs(n.limit - groups[index].limit)
+                }
+
+                if mergeWithPrevious {
+                    groups[index - 1].to = groups[index].to
+                } else {
+                    groups[index + 1].from = groups[index].from
+                }
+                groups.remove(at: index)
+                changed = true
+                break
+            }
+        }
+
+        return groups.enumerated().map { position, group in
+            Stretch(
+                id: position,
+                coordinates: Array(points[group.from...group.to]).map(\.coordinate),
+                limit: group.limit,
+                startDistance: points[group.from].distance,
+                endDistance: points[group.to].distance
+            )
+        }
+    }
+
     /// Same route driven the other way, for `pingPong` / `reverseOnce`.
     func reversed() -> RoutePlan {
         guard points.count > 1 else { return self }
@@ -109,7 +187,9 @@ enum RouteSimulator {
         coordinates: [CLLocationCoordinate2D],
         profile: DriveProfile,
         mode: TravelMode,
-        routeExpectedSpeed: CLLocationSpeed? = nil
+        routeExpectedSpeed: CLLocationSpeed? = nil,
+        overrides: [LimitOverride] = [],
+        recordedSpeed: ((CLLocationDistance) -> CLLocationSpeed)? = nil
     ) -> RoutePlan {
         // ~8 m spacing keeps corner geometry meaningful without making the
         // arrays huge on a long motorway leg.
@@ -135,6 +215,9 @@ enum RouteSimulator {
             }
         }
 
+        // Replaying a recording only makes sense when there is one; falling
+        // back keeps a GPX without timestamps from driving at zero.
+        let replaying = profile.speedSource == .recorded && recordedSpeed != nil
         let usesLimits = profile.speedSource == .roadLimit
         let baseline = baselineSpeed(
             profile: profile,
@@ -142,7 +225,7 @@ enum RouteSimulator {
             routeExpectedSpeed: routeExpectedSpeed
         )
 
-        let limits = usesLimits
+        var limits = usesLimits
             ? estimateLimits(
                 coordinates: resampled,
                 cumulative: cumulative,
@@ -150,6 +233,25 @@ enum RouteSimulator {
                 units: profile.units
             )
             : Array(repeating: baseline, count: resampled.count)
+
+        if replaying, let recordedSpeed {
+            for index in limits.indices {
+                // A recorded stop is a real zero; keep a floor so the walker
+                // still creeps out of it rather than parking there forever.
+                limits[index] = max(0.4, recordedSpeed(cumulative[index]))
+            }
+        }
+
+        // Hand corrections win over the estimate, which is the whole point of
+        // being able to make them: the estimate reads the road's shape, and a
+        // road can be shaped like one limit and signed as another.
+        if usesLimits, !overrides.isEmpty {
+            for index in limits.indices {
+                if let override = overrides.first(where: { $0.contains(cumulative[index]) }) {
+                    limits[index] = override.limit
+                }
+            }
+        }
 
         let lateral = profile.cornering.lateralAcceleration
         let ceilingCap = profile.ceilingMetresPerSecond
@@ -209,6 +311,10 @@ enum RouteSimulator {
         case .fixed:
             return max(0.5, profile.fixedSpeedMetresPerSecond)
         case .travelMode:
+            return mode.baseSpeed
+        case .recorded:
+            // Only reached when the track had no usable timing; the mode's pace
+            // is a better guess than nothing.
             return mode.baseSpeed
         case .roadLimit:
             // Apple's expected travel time already folds in junctions, lights
@@ -477,10 +583,20 @@ final class DriveWalker {
 
     private(set) var isFinished = false
 
-    init(plan: RoutePlan, profile: DriveProfile) {
+    /// - Parameter startDistance: where to pick the drive up, in metres from the
+    ///   start. Stops before that point are marked served, so resuming halfway
+    ///   doesn't brake for junctions that were already sat through.
+    init(plan: RoutePlan, profile: DriveProfile, startDistance: CLLocationDistance = 0) {
         self.plan = plan
         self.profile = profile
         self.trafficFactor = profile.traffic.meanFactor
+        self.distance = startDistance.clamped(to: 0...max(0, plan.totalDistance))
+
+        if self.distance > 0 {
+            for (index, point) in plan.points.enumerated() where point.isStop && point.distance <= self.distance {
+                servedStops.insert(index)
+            }
+        }
     }
 
     var totalDistance: CLLocationDistance { plan.totalDistance }

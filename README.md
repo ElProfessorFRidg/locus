@@ -16,8 +16,11 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Live joystick — walk / run / cycle / drive with light speed variation
 - Walk/Drive routing on real roads & footpaths (MapKit), with Apple's alternatives to pick from
 - **Driving parameters** — respect the limit +10%, acceleration and braking, corner grip, traffic, junction stops, GPS scatter, lane offset, 0.5×–8× playback, loop / back-and-forth
-- Live speedometer with a speed-limit sign while a route plays
-- Draw a path or import / export GPX
+- Named driving profiles, saved routes, and resume after an interrupted drive
+- Route coloured by estimated limit before you drive it, with per-stretch corrections
+- Live speedometer with a speed-limit sign, plus a Lock Screen / Dynamic Island Live Activity
+- Siri and Shortcuts — teleport, stop, connect the tunnel, switch profile
+- Draw a path, or import / export GPX (timestamps replayed at their recorded pace)
 - Background keep-alive + live status bar + drop alerts
 - Favorites & recents
 - First-run setup walkthrough
@@ -38,7 +41,15 @@ Routes are played through a small vehicle model rather than replayed point by po
 | **Realism** | Speed wobble, GPS scatter, lane offset, drive on the left |
 | **Playback** | 0.5×–8× time, 0.5–4 Hz fix rate, start delay, loop / back-and-forth / return once |
 
+Keep several of these as named **profiles** — a commute and a walk in the park want opposite settings — and switch instead of retuning. Four ready-made ones are offered.
+
 **Speed limits are estimated, not looked up.** MapKit publishes no posted-limit data. Locus derives a limit from the pace Apple expects for the route combined with how the road bends and how often it turns, then snaps the result to values roads are actually signed at (30/50/90/130, or 25/35/55/70 in mph). Treat it as a good reading of the road, not a legal figure.
+
+Because it's an estimate, the route is **coloured by limit on the map** before you drive it, and any stretch it gets wrong can be **corrected by hand** from the route sheet — the drive then uses your number. Routes are saveable, corrections and all, and a drive that gets interrupted can be picked up where it stopped.
+
+A **GPX with timestamps** can be replayed at the pace it was actually recorded at, stops included.
+
+While a route plays, speed, the limit sign and progress appear on the **Lock Screen and Dynamic Island**, and **Siri / Shortcuts** can teleport to a saved place, stop spoofing, connect the tunnel or switch profile.
 
 ## Install
 

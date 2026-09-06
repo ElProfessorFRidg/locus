@@ -20,6 +20,15 @@ struct DriveSettingsView: View {
     @State private var draftName = ""
     @State private var showStarters = false
 
+    /// "As recorded" only exists while a track with timestamps is loaded, so it
+    /// is shown when it is already in use and hidden otherwise — offering it
+    /// against a route with no timing would be offering nothing.
+    private var sourceChoices: [SpeedSource] {
+        profile.speedSource == .recorded
+            ? SpeedSource.selectable + [.recorded]
+            : SpeedSource.selectable
+    }
+
     /// Sample limits used for the live "what this actually means" preview.
     private var previewLimits: [Double] {
         profile.units == .kph ? [30, 50, 90, 130] : [25, 35, 55, 70]
@@ -140,7 +149,7 @@ struct DriveSettingsView: View {
     private var speedSection: some View {
         Section {
             Picker("Speed from", selection: $profile.speedSource) {
-                ForEach(SpeedSource.allCases) { source in
+                ForEach(sourceChoices) { source in
                     Text(source.title).tag(source)
                 }
             }

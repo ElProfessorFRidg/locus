@@ -3,7 +3,7 @@ import Foundation
 import MapKit
 
 /// The route being put together on the map: endpoints, whatever Apple returned
-/// for them, and anything drawn or imported by hand.
+/// for them, anything drawn or imported by hand, and the corrections made to it.
 ///
 /// Held by `MapHomeView` and handed to the planner sheet, so the sheet edits the
 /// same state the map is drawing rather than a copy of it.
@@ -21,6 +21,18 @@ final class RouteWorkspace: ObservableObject {
     @Published var drawMode = false
 
     @Published var isBuilding = false
+
+    /// Hand corrections to the estimated limits, for the selected route.
+    @Published private(set) var overrides: [LimitOverride] = []
+
+    /// The selected route split into stretches by limit — what the coloured
+    /// overlay draws and what the corrections list edits.
+    @Published private(set) var stretches: [RoutePlan.Stretch] = []
+    @Published private(set) var previewUsesLimits = false
+
+    /// Set when the current route came from the saved list, so corrections can
+    /// be written back to it.
+    @Published private(set) var savedRouteID: UUID?
 
     var selectedRoute: BuiltRoute? {
         guard let selectedRouteID else { return routes.first }
@@ -55,34 +67,127 @@ final class RouteWorkspace: ObservableObject {
         return nil
     }
 
+    // MARK: - Selection
+
     func clearRoutes() {
         routes = []
         selectedRouteID = nil
+        savedRouteID = nil
+        overrides = []
+        stretches = []
     }
 
     func adopt(_ built: [BuiltRoute]) {
         routes = built
         selectedRouteID = built.first?.id
+        savedRouteID = nil
+        overrides = []
     }
 
     /// Replaces the road route with an imported or drawn path so the rest of the
     /// app has one place to look for "the route".
-    func adoptRawPath(_ coordinates: [CLLocationCoordinate2D], named name: String) {
+    ///
+    /// - Parameter recordedTimes: timestamps from a GPX track, one per
+    ///   coordinate. When present they give both a real `expectedTravelTime`
+    ///   and the per-point pace that "As recorded" replays.
+    func adoptRawPath(
+        _ coordinates: [CLLocationCoordinate2D],
+        named name: String,
+        recordedTimes: [Date]? = nil
+    ) {
         guard coordinates.count > 1 else { return }
         var distance: CLLocationDistance = 0
         for (a, b) in zip(coordinates, coordinates.dropFirst()) {
             distance += Geo.distance(a, b)
         }
+
         // expectedTravelTime 0 marks "no timing data", which is what makes
         // `expectedSpeed` nil and sends the estimator back to the travel mode.
+        var duration: TimeInterval = 0
+        if let recordedTimes, recordedTimes.count == coordinates.count,
+           let first = recordedTimes.first, let last = recordedTimes.last {
+            duration = max(0, last.timeIntervalSince(first))
+        }
+
         routes = [BuiltRoute(
             name: name,
             coordinates: coordinates,
             distance: distance,
-            expectedTravelTime: 0
+            expectedTravelTime: duration,
+            recordedTimes: duration > 1 ? recordedTimes : nil
         )]
         selectedRouteID = routes.first?.id
+        savedRouteID = nil
+        overrides = []
     }
+
+    /// True when the loaded route carries timestamps worth replaying.
+    var hasRecordedPace: Bool { selectedRoute?.recordedTimes != nil }
+
+    /// Speed by distance along the recorded track, or nil when there isn't one.
+    var recordedSpeedSampler: ((CLLocationDistance) -> CLLocationSpeed)? {
+        selectedRoute?.recordedSpeedSampler()
+    }
+
+    func adopt(saved: SavedRoute) {
+        routes = [saved.built]
+        selectedRouteID = routes.first?.id
+        savedRouteID = saved.id
+        overrides = saved.overrides
+        drawnPath.removeAll()
+    }
+
+    // MARK: - Preview
+
+    /// Rebuilds the stretch breakdown for the selected route.
+    ///
+    /// Runs the same planner the drive uses, so what the map colours and what
+    /// the car will actually do are the same numbers rather than two estimates
+    /// that can disagree.
+    func refreshPreview(profile: DriveProfile, mode: TravelMode) {
+        let coordinates = activeCoordinates
+        guard coordinates.count > 1 else {
+            stretches = []
+            previewUsesLimits = false
+            return
+        }
+
+        let plan = RouteSimulator.plan(
+            coordinates: coordinates,
+            profile: profile,
+            mode: mode,
+            routeExpectedSpeed: activeExpectedSpeed,
+            overrides: overrides,
+            recordedSpeed: recordedSpeedSampler
+        )
+        stretches = plan.stretches()
+        previewUsesLimits = plan.usesEstimatedLimits
+    }
+
+    // MARK: - Overrides
+
+    /// Corrects the limit over one stretch. Passing `nil` removes the correction
+    /// and hands the stretch back to the estimator.
+    func setOverride(_ limit: CLLocationSpeed?, for stretch: RoutePlan.Stretch) {
+        overrides.removeAll { $0.startDistance == stretch.startDistance && $0.endDistance == stretch.endDistance }
+        if let limit {
+            overrides.append(LimitOverride(
+                startDistance: stretch.startDistance,
+                endDistance: stretch.endDistance,
+                limit: limit
+            ))
+        }
+    }
+
+    func override(for stretch: RoutePlan.Stretch) -> LimitOverride? {
+        overrides.first { $0.startDistance == stretch.startDistance && $0.endDistance == stretch.endDistance }
+    }
+
+    func clearOverrides() {
+        overrides = []
+    }
+
+    // MARK: - Routing
 
     func buildRoadRoute(
         fallbackStart: CLLocationCoordinate2D?,

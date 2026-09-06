@@ -20,6 +20,9 @@ struct MapHomeView: View {
     @State private var pinPlaceName: String?
     /// Keeps the camera on the car while a route plays.
     @State private var followsDrive = true
+    /// Set after importing a GPX that carried timestamps, so the offer to
+    /// replay it at its recorded pace appears where the import happened.
+    @State private var importedPaceHint: String?
 
     @Namespace private var chromeGlass
 
@@ -65,10 +68,18 @@ struct MapHomeView: View {
         }
         .onAppear {
             session.startLocationUpdates()
+            refreshPreview()
         }
         .onChange(of: session.pin?.latitude) { _, newValue in
             if newValue == nil { pinSelected = false }
         }
+        // The preview is the planner's own output, so it has to be rebuilt
+        // whenever anything the planner reads changes — the route, the profile,
+        // the mode, or a hand correction.
+        .onChange(of: workspace.selectedRouteID) { _, _ in refreshPreview() }
+        .onChange(of: workspace.overrides) { _, _ in refreshPreview() }
+        .onChange(of: session.drive) { _, _ in refreshPreview() }
+        .onChange(of: session.travelMode) { _, _ in refreshPreview() }
         .onChange(of: session.telemetry?.distanceTravelled) { _, _ in
             guard followsDrive, let simulated = session.simulated, session.isRouting else { return }
             position = .region(MKCoordinateRegion(
@@ -100,6 +111,9 @@ struct MapHomeView: View {
             )
             .presentationDetents([.medium, .large])
             .environmentObject(session)
+            // The corrections list is the preview's output, so make sure it
+            // exists before the sheet that edits it opens.
+            .onAppear { refreshPreview() }
         }
     }
 
@@ -178,8 +192,23 @@ struct MapHomeView: View {
         }
 
         if let selected = workspace.selectedRoute, selected.coordinates.count > 1 {
-            MapPolyline(coordinates: selected.coordinates)
-                .stroke(LocusTheme.accent, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+            if workspace.previewUsesLimits, !workspace.stretches.isEmpty {
+                // One polyline per stretch, coloured by the limit it carries.
+                // The estimate is the thing the whole drive is keyed to, so it
+                // is worth being able to see it before committing forty minutes
+                // to it — and worth spotting a wrong one on the map rather than
+                // halfway down a motorway.
+                ForEach(workspace.stretches) { stretch in
+                    MapPolyline(coordinates: stretch.coordinates)
+                        .stroke(
+                            LocusTheme.speedColor(forLimit: stretch.limit, unit: session.drive.units),
+                            style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
+                        )
+                }
+            } else {
+                MapPolyline(coordinates: selected.coordinates)
+                    .stroke(LocusTheme.accent, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+            }
         }
 
         if workspace.drawnPath.count > 1 {
@@ -239,6 +268,12 @@ struct MapHomeView: View {
                         .locusGlassID("draw", in: chromeGlass)
                         .transition(.scale(scale: 0.92).combined(with: .opacity))
                 }
+
+                if let hint = importedPaceHint {
+                    recordedPaceBanner(duration: hint)
+                        .locusGlassID("pace", in: chromeGlass)
+                        .transition(.scale(scale: 0.92).combined(with: .opacity))
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -246,6 +281,7 @@ struct MapHomeView: View {
         .safeAreaPadding(.top, 8)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: search.results.count)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: workspace.drawMode)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: importedPaceHint)
     }
 
     private var searchBar: some View {
@@ -370,6 +406,44 @@ struct MapHomeView: View {
         .accessibilityLabel(followsDrive ? "Stop following the drive" : "Follow the drive")
     }
 
+    /// A GPX with timestamps is a recording of something someone actually did.
+    /// Offering to replay it at that pace is the one thing you can do with the
+    /// timing data, so it's offered here rather than buried in the parameters.
+    private func recordedPaceBanner(duration: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "waveform.path.ecg")
+                .foregroundStyle(LocusTheme.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Track recorded over \(duration)")
+                    .font(.caption.weight(.semibold))
+                Text(session.drive.speedSource == .recorded
+                     ? "Replaying at that pace."
+                     : "Replay it at that pace?")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if session.drive.speedSource == .recorded {
+                Button("Dismiss") { importedPaceHint = nil }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("Use it") {
+                    session.drive.speedSource = .recorded
+                    refreshPreview()
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(LocusTheme.accent)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .locusGlass(.clear, in: Capsule())
+        .contentShape(Capsule())
+    }
+
     private var drawModeBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "hand.tap.fill")
@@ -475,6 +549,10 @@ struct MapHomeView: View {
         }
     }
 
+    private func refreshPreview() {
+        workspace.refreshPreview(profile: session.drive, mode: session.travelMode)
+    }
+
     private func playRoute() {
         guard workspace.hasPlayablePath else {
             session.lastError = "Find a route, draw one, or import a GPX file first."
@@ -486,7 +564,9 @@ struct MapHomeView: View {
             workspace.activeCoordinates,
             pairing: pairing,
             expectedSpeed: workspace.activeExpectedSpeed,
-            name: workspace.selectedRoute?.name ?? "Route"
+            name: workspace.selectedRoute?.name ?? "Route",
+            overrides: workspace.overrides,
+            recordedSpeed: workspace.recordedSpeedSampler
         )
     }
 
@@ -500,16 +580,28 @@ struct MapHomeView: View {
 
     private func importGPX(_ url: URL) {
         do {
-            let coords = try GPXCodec.parse(url)
+            let track = try GPXCodec.parseTrack(url)
+            guard track.coordinates.count > 1 else {
+                session.lastError = "That GPX file has no track to follow."
+                return
+            }
+
+            // Timestamps are kept only when there is one per point: resampling
+            // the coordinates without them would leave the two arrays out of
+            // step, and a pace mapped onto the wrong places is worse than none.
             workspace.adoptRawPath(
-                RouteBuilder.sample(coordinates: coords, every: 10),
-                named: url.deletingPathExtension().lastPathComponent
+                track.coordinates,
+                named: url.deletingPathExtension().lastPathComponent,
+                recordedTimes: track.hasTiming ? track.times : nil
             )
             workspace.drawnPath.removeAll()
-            if let first = coords.first {
-                session.setPin(first)
+            session.setPin(track.coordinates[0])
+            refreshPreview()
+            focus(on: track.coordinates)
+
+            if track.hasTiming {
+                importedPaceHint = DriveFormat.clock(track.duration)
             }
-            focus(on: coords)
         } catch {
             session.lastError = error.localizedDescription
         }
