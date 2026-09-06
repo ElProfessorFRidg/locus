@@ -27,7 +27,7 @@ enum TravelMode: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Base meters per second before natural variation.
+    /// Base metres per second before natural variation.
     var baseSpeed: CLLocationSpeed {
         switch self {
         case .walk: return 1.4
@@ -43,6 +43,10 @@ enum TravelMode: String, CaseIterable, Identifiable {
         case .cycle, .drive: return .automobile
         }
     }
+
+    /// Only driving gets the full parameter set; the rest borrow the physics but
+    /// the UI leads with different defaults.
+    var usesRoadLimits: Bool { self == .drive || self == .cycle }
 }
 
 enum SpoofStatus: Equatable {
@@ -68,6 +72,24 @@ enum SpoofStatus: Equatable {
     }
 }
 
+/// Live state of a route being driven, for the HUD.
+struct DriveTelemetry: Equatable {
+    var speed: CLLocationSpeed = 0
+    /// Estimated posted limit here, or `nil` when not driving to limits.
+    var speedLimit: CLLocationSpeed?
+    var course: CLLocationDirection = 0
+    var progress: Double = 0
+    var distanceTravelled: CLLocationDistance = 0
+    var distanceRemaining: CLLocationDistance = 0
+    /// Simulated seconds — with `timeScale` above 1 this runs ahead of the clock.
+    var elapsed: TimeInterval = 0
+    var isStopped = false
+    var isOverLimit = false
+    /// 1 on the first pass, 2 on the way back, and so on.
+    var lap: Int = 1
+    var totalDistance: CLLocationDistance = 0
+}
+
 @MainActor
 final class SpoofSession: ObservableObject {
     @Published var status: SpoofStatus = .idle
@@ -82,10 +104,27 @@ final class SpoofSession: ObservableObject {
     @Published var favorites: [SavedPlace] = []
     @Published var recents: [SavedPlace] = []
 
+    /// Everything about how a route is driven. Persisted on every change so the
+    /// sheet can bind straight to it.
+    @Published var drive: DriveProfile {
+        didSet { if drive != oldValue { drive.save() } }
+    }
+
+    /// Non-nil while a route is playing.
+    @Published private(set) var telemetry: DriveTelemetry?
+    @Published private(set) var isRoutePaused = false
+    /// Countdown before the first fix, when `drive.startDelaySeconds` is set.
+    @Published private(set) var routeCountdown: Int?
+
     private var resendTimer: Timer?
     private var healthTimer: Timer?
     private var joystickTimer: Timer?
     private var routeTask: Task<Void, Never>?
+    /// Bumped whenever a route starts or is cancelled. A finishing task only
+    /// tears down shared state if it is still the current one — otherwise
+    /// restarting a route would have the outgoing task clear the incoming
+    /// route's telemetry a moment after it began.
+    private var routeGeneration = 0
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var joystickVector: CGVector = .zero
     private let locationKeeper = BackgroundKeepAlive()
@@ -94,6 +133,7 @@ final class SpoofSession: ObservableObject {
     private let recentsKey = "locus.recents"
 
     init() {
+        drive = DriveProfile.load()
         favorites = SavedPlace.load(key: favoritesKey)
         recents = SavedPlace.load(key: recentsKey)
     }
@@ -104,18 +144,25 @@ final class SpoofSession: ObservableObject {
         return false
     }
 
+    var isRouting: Bool { routeTask != nil }
+
+    // MARK: - Teleport
+
     func teleport(to coordinate: CLLocationCoordinate2D, pairing: PairingStore) {
         guard pairing.hasPairingFile else {
             lastError = "Import an RPPairing file in Settings first."
             return
         }
         pin = coordinate
-        apply(coordinate, pairing: pairing, markRecent: true)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.prepareTunnel()
+            self.apply(coordinate, pairing: pairing, markRecent: true)
+        }
     }
 
     func stop(pairing: PairingStore) {
-        routeTask?.cancel()
-        routeTask = nil
+        cancelRoute()
         stopJoystick()
         stopResend()
         stopHealth()
@@ -147,6 +194,17 @@ final class SpoofSession: ObservableObject {
         locationKeeper.start()
     }
 
+    /// Brings Locus' own tunnel up if it isn't already, so a teleport doesn't
+    /// fail with "could not open the developer tunnel" when one tap could have
+    /// fixed it. Silent when the tunnel is already reachable.
+    private func prepareTunnel() async {
+        let controller = TunnelController.shared
+        guard controller.autoConnect else { return }
+        _ = await controller.ensureConnected()
+    }
+
+    // MARK: - Joystick
+
     func startJoystick(pairing: PairingStore) {
         guard pairing.hasPairingFile else {
             lastError = "Import an RPPairing file in Settings first."
@@ -157,14 +215,19 @@ final class SpoofSession: ObservableObject {
             lastError = "Drop a pin or teleport somewhere before using the joystick."
             return
         }
-        if simulated == nil {
-            apply(start, pairing: pairing, markRecent: false)
-        }
-        joystickActive = true
-        joystickTimer?.invalidate()
-        joystickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.tickJoystick(pairing: pairing)
+        cancelRoute()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.prepareTunnel()
+            if self.simulated == nil {
+                self.apply(start, pairing: pairing, markRecent: false)
+            }
+            self.joystickActive = true
+            self.joystickTimer?.invalidate()
+            self.joystickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    self?.tickJoystick(pairing: pairing)
+                }
             }
         }
     }
@@ -180,42 +243,191 @@ final class SpoofSession: ObservableObject {
         joystickTimer = nil
     }
 
-    func followRoute(_ coordinates: [CLLocationCoordinate2D], pairing: PairingStore) {
-        guard pairing.hasPairingFile, coordinates.count >= 2 else { return }
-        routeTask?.cancel()
+    /// Top speed the joystick moves at. A fixed speed set for routes is an
+    /// explicit "go this fast" and applies here too; otherwise the travel mode
+    /// decides, as before.
+    private var joystickTopSpeed: CLLocationSpeed {
+        drive.speedSource == .fixed
+            ? max(0.3, drive.fixedSpeedMetresPerSecond)
+            : travelMode.baseSpeed
+    }
+
+    private func tickJoystick(pairing: PairingStore) {
+        guard joystickActive, let current = simulated else { return }
+        let magnitude = hypot(joystickVector.dx, joystickVector.dy)
+        guard magnitude > 0.08 else { return }
+        let nx = joystickVector.dx / magnitude
+        let ny = -joystickVector.dy / magnitude
+        let jitter = 1 + Double.random(in: -1...1) * drive.speedJitter
+        let speed = joystickTopSpeed * min(1.0, magnitude) * jitter
+        let dt = 0.25
+        let meters = speed * dt
+        let next = Geo.offset(current, east: nx * meters, north: ny * meters)
+        apply(next, pairing: pairing, markRecent: false)
+    }
+
+    // MARK: - Routes
+
+    /// Plays `coordinates` using the current `DriveProfile`.
+    ///
+    /// - Parameter expectedSpeed: `MKRoute.distance / expectedTravelTime` when
+    ///   the path came from Apple's directions. Without it the road-limit
+    ///   estimate has nothing to scale off and falls back to the travel mode.
+    func startRoute(
+        _ coordinates: [CLLocationCoordinate2D],
+        pairing: PairingStore,
+        expectedSpeed: CLLocationSpeed? = nil
+    ) {
+        guard pairing.hasPairingFile else {
+            lastError = "Import an RPPairing file in Settings first."
+            return
+        }
+        guard coordinates.count >= 2 else {
+            lastError = "Build or draw a route first."
+            return
+        }
+
+        cancelRoute()
         stopJoystick()
+
+        let profile = drive
         let mode = travelMode
+        let basePlan = RouteSimulator.plan(
+            coordinates: coordinates,
+            profile: profile,
+            mode: mode,
+            routeExpectedSpeed: expectedSpeed
+        )
+        guard !basePlan.isEmpty else {
+            lastError = "That route is too short to drive."
+            return
+        }
+
+        isRoutePaused = false
+        telemetry = DriveTelemetry(totalDistance: basePlan.totalDistance)
+
+        routeGeneration += 1
+        let generation = routeGeneration
+
         routeTask = Task { [weak self] in
             guard let self else { return }
-            var previous = coordinates[0]
-            await MainActor.run {
-                self.apply(previous, pairing: pairing, markRecent: true)
+            await self.prepareTunnel()
+            await self.countDown(seconds: profile.startDelaySeconds)
+            if !Task.isCancelled {
+                await self.run(plan: basePlan, profile: profile, pairing: pairing)
             }
-            for next in coordinates.dropFirst() {
-                if Task.isCancelled { break }
-                let distance = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
-                    .distance(from: CLLocation(latitude: next.latitude, longitude: next.longitude))
-                var speed = mode.baseSpeed * Double.random(in: 0.88...1.12)
-                speed = max(0.8, speed)
-                let stepMeters: CLLocationDistance = min(12, max(4, speed * 0.5))
-                let steps = max(1, Int(ceil(distance / stepMeters)))
-                for i in 1...steps {
-                    if Task.isCancelled { break }
-                    let t = Double(i) / Double(steps)
-                    let coord = CLLocationCoordinate2D(
-                        latitude: previous.latitude + (next.latitude - previous.latitude) * t,
-                        longitude: previous.longitude + (next.longitude - previous.longitude) * t
-                    )
-                    let delay = stepMeters / speed
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    await MainActor.run {
-                        self.apply(coord, pairing: pairing, markRecent: false)
-                    }
+            self.finishRoute(generation: generation)
+        }
+    }
+
+    private func finishRoute(generation: Int) {
+        guard generation == routeGeneration else { return }
+        routeTask = nil
+        telemetry = nil
+        isRoutePaused = false
+        routeCountdown = nil
+    }
+
+    func pauseRoute() { isRoutePaused = true }
+    func resumeRoute() { isRoutePaused = false }
+
+    func toggleRoutePause() {
+        isRoutePaused.toggle()
+    }
+
+    func cancelRoute() {
+        routeGeneration += 1
+        routeTask?.cancel()
+        routeTask = nil
+        telemetry = nil
+        isRoutePaused = false
+        routeCountdown = nil
+    }
+
+    private func countDown(seconds: Double) async {
+        guard seconds >= 1 else { return }
+        var remaining = Int(seconds.rounded())
+        while remaining > 0, !Task.isCancelled {
+            routeCountdown = remaining
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            remaining -= 1
+        }
+        routeCountdown = nil
+    }
+
+    /// One pass over `plan`, repeated or reversed per `endBehavior`.
+    private func run(plan: RoutePlan, profile: DriveProfile, pairing: PairingStore) async {
+        let dt = profile.updateInterval
+        let scale = max(0.05, profile.timeScale)
+        let realInterval = UInt64((dt / scale) * 1_000_000_000)
+
+        var current = plan
+        var lap = 1
+
+        while !Task.isCancelled {
+            let walker = DriveWalker(plan: current, profile: profile)
+
+            while !Task.isCancelled, let fix = walker.step(dt: dt) {
+                while isRoutePaused, !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
                 }
-                previous = next
+                guard !Task.isCancelled else { return }
+
+                apply(fix.coordinate, pairing: pairing, markRecent: false)
+                telemetry = DriveTelemetry(
+                    speed: fix.speed,
+                    speedLimit: fix.speedLimit,
+                    course: fix.course,
+                    progress: walker.progress,
+                    distanceTravelled: fix.distanceTravelled,
+                    distanceRemaining: fix.distanceRemaining,
+                    elapsed: fix.elapsed,
+                    isStopped: fix.isStopped,
+                    isOverLimit: fix.isOverLimit,
+                    lap: lap,
+                    totalDistance: walker.totalDistance
+                )
+
+                if fix.isOverLimit, profile.hapticOnLimitChange {
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.4)
+                }
+
+                try? await Task.sleep(nanoseconds: realInterval)
+            }
+
+            guard !Task.isCancelled else { return }
+
+            switch profile.endBehavior {
+            case .stop:
+                return
+            case .loop:
+                lap += 1
+                // Straight back to the start line — the jump is a teleport, the
+                // same as pressing play again.
+                continue
+            case .pingPong:
+                lap += 1
+                current = current.reversed()
+                continue
+            case .reverseOnce:
+                guard lap == 1 else { return }
+                lap += 1
+                current = current.reversed()
+                continue
             }
         }
     }
+
+    /// Fuel and CO₂ for a distance driven. Garnish — it is the profile's flat
+    /// L/100 km figure times the distance, not anything the simulation measured,
+    /// and the UI says so.
+    func tripEconomy(distance: CLLocationDistance) -> (litres: Double, gramsCO2: Double) {
+        let litres = (distance / 1000) * (drive.consumption / 100)
+        // ~2.31 kg CO₂ per litre of petrol burnt.
+        return (litres, litres * 2310)
+    }
+
+    // MARK: - Places
 
     func addFavorite(name: String, coordinate: CLLocationCoordinate2D) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -287,6 +499,8 @@ final class SpoofSession: ObservableObject {
         return false
     }
 
+    // MARK: - Engine
+
     private func apply(_ coordinate: CLLocationCoordinate2D, pairing: PairingStore, markRecent: Bool) {
         if status == .idle || status.isDropped {
             status = .connecting
@@ -323,24 +537,14 @@ final class SpoofSession: ObservableObject {
         }
     }
 
-    private func tickJoystick(pairing: PairingStore) {
-        guard joystickActive, let current = simulated else { return }
-        let magnitude = hypot(joystickVector.dx, joystickVector.dy)
-        guard magnitude > 0.08 else { return }
-        let nx = joystickVector.dx / magnitude
-        let ny = -joystickVector.dy / magnitude
-        let speed = travelMode.baseSpeed * min(1.0, magnitude) * Double.random(in: 0.9...1.1)
-        let dt = 0.25
-        let meters = speed * dt
-        let next = offset(coordinate: current, eastMeters: nx * meters, northMeters: ny * meters)
-        apply(next, pairing: pairing, markRecent: false)
-    }
-
     private func startResend(pairing: PairingStore) {
         resendTimer?.invalidate()
         resendTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let sim = self.simulated else { return }
+                // A route re-sends far more often than this on its own; resending
+                // underneath it would fight the walker for the current fix.
+                guard !self.isRouting else { return }
                 _ = LocationEngine.set(
                     latitude: sim.latitude,
                     longitude: sim.longitude,
@@ -420,12 +624,5 @@ final class SpoofSession: ObservableObject {
         content.sound = .default
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
-    }
-
-    private func offset(coordinate: CLLocationCoordinate2D, eastMeters: Double, northMeters: Double) -> CLLocationCoordinate2D {
-        let earth = 6378137.0
-        let dLat = northMeters / earth * (180 / .pi)
-        let dLon = eastMeters / (earth * cos(coordinate.latitude * .pi / 180)) * (180 / .pi)
-        return CLLocationCoordinate2D(latitude: coordinate.latitude + dLat, longitude: coordinate.longitude + dLon)
     }
 }

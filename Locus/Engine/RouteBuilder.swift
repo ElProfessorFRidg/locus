@@ -2,24 +2,60 @@ import CoreLocation
 import Foundation
 import MapKit
 
+/// One routing result, kept with the numbers the driving model needs.
+///
+/// `expectedSpeed` is the only real signal Apple gives about how fast these
+/// particular roads are — MapKit exposes no posted speed limits at all — so it
+/// is carried through to `RouteSimulator` rather than thrown away with the rest
+/// of the `MKRoute`.
+struct BuiltRoute: Identifiable {
+    let id = UUID()
+    let name: String
+    let coordinates: [CLLocationCoordinate2D]
+    let distance: CLLocationDistance
+    let expectedTravelTime: TimeInterval
+
+    /// Average speed Apple expects over this route, m/s.
+    var expectedSpeed: CLLocationSpeed? {
+        expectedTravelTime > 1 ? distance / expectedTravelTime : nil
+    }
+}
+
 enum RouteBuilder {
-    static func roadRoute(
+    /// Routes `start` → `end` on real roads/footpaths, newest result first.
+    ///
+    /// Returns every alternative Apple offers when `alternatives` is on, so the
+    /// route sheet can let you take the scenic one instead of silently driving
+    /// whichever came back first.
+    static func roadRoutes(
         from start: CLLocationCoordinate2D,
         to end: CLLocationCoordinate2D,
-        mode: TravelMode
-    ) async throws -> [CLLocationCoordinate2D] {
+        mode: TravelMode,
+        alternatives: Bool = true
+    ) async throws -> [BuiltRoute] {
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: start))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: end))
         request.transportType = mode.mkTransportType
-        request.requestsAlternateRoutes = false
+        request.requestsAlternateRoutes = alternatives
 
-        let directions = MKDirections(request: request)
-        let response = try await directions.calculate()
-        guard let route = response.routes.first else {
-            throw NSError(domain: "Locus", code: 1, userInfo: [NSLocalizedDescriptionKey: "No route found"])
+        let response = try await MKDirections(request: request).calculate()
+        guard !response.routes.isEmpty else {
+            throw NSError(
+                domain: "Locus",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No route found between those two points."]
+            )
         }
-        return sample(polyline: route.polyline, every: 12)
+
+        return response.routes.enumerated().map { index, route in
+            BuiltRoute(
+                name: route.name.isEmpty ? "Route \(index + 1)" : route.name,
+                coordinates: sample(polyline: route.polyline, every: 12),
+                distance: route.distance,
+                expectedTravelTime: route.expectedTravelTime
+            )
+        }
     }
 
     static func sample(polyline: MKPolyline, every meters: CLLocationDistance) -> [CLLocationCoordinate2D] {

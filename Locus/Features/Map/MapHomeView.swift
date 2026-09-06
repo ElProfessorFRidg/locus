@@ -6,22 +6,22 @@ struct MapHomeView: View {
     @EnvironmentObject private var pairing: PairingStore
 
     @StateObject private var search = PlaceSearchCompleter()
+    @StateObject private var workspace = RouteWorkspace()
+
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
-    @State private var routeStart: CLLocationCoordinate2D?
-    @State private var routeEnd: CLLocationCoordinate2D?
-    @State private var routeCoords: [CLLocationCoordinate2D] = []
-    @State private var isRouting = false
     @State private var showRouteSheet = false
     @State private var showGPXImporter = false
-    @State private var drawnPath: [CLLocationCoordinate2D] = []
-    @State private var drawMode = false
     @State private var pinSelected = false
     @State private var isDraggingPin = false
     @State private var suppressNextMapTap = false
     /// Set when the pin comes from search / a named place so starring keeps the title.
     @State private var pinPlaceName: String?
+    /// Keeps the camera on the car while a route plays.
+    @State private var followsDrive = true
+
+    @Namespace private var chromeGlass
 
     private var mapStyle: MapStyle {
         switch session.mapStyleIndex {
@@ -39,69 +39,9 @@ struct MapHomeView: View {
             MapReader { proxy in
                 Map(position: $position) {
                     UserAnnotation()
-
-                    if let pin = session.pin {
-                        Annotation("", coordinate: pin, anchor: .bottom) {
-                            MapDropPin(
-                                selected: pinSelected,
-                                isDragging: isDraggingPin,
-                                onSelect: {
-                                    searchFocused = false
-                                    suppressNextMapTap = true
-                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
-                                        pinSelected.toggle()
-                                    }
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                        suppressNextMapTap = false
-                                    }
-                                },
-                                onRemove: {
-                                    suppressNextMapTap = true
-                                    withAnimation {
-                                        session.pin = nil
-                                        pinSelected = false
-                                    }
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                        suppressNextMapTap = false
-                                    }
-                                },
-                                onDragBegan: {
-                                    searchFocused = false
-                                    suppressNextMapTap = true
-                                    pinSelected = false
-                                    isDraggingPin = true
-                                },
-                                onDragMoved: { globalPoint in
-                                    if let coord = proxy.convert(globalPoint, from: .global) {
-                                        session.pin = coord
-                                    }
-                                },
-                                onDragEnded: {
-                                    isDraggingPin = false
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                        suppressNextMapTap = false
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    if let sim = session.simulated {
-                        Annotation("Spoof", coordinate: sim) {
-                            ZStack {
-                                Circle().fill(LocusTheme.accent.opacity(0.25)).frame(width: 44, height: 44)
-                                Circle().fill(LocusTheme.accent).frame(width: 14, height: 14)
-                                    .overlay(Circle().stroke(.white, lineWidth: 2))
-                            }
-                        }
-                    }
-                    if routeCoords.count > 1 {
-                        MapPolyline(coordinates: routeCoords)
-                            .stroke(LocusTheme.accent, lineWidth: 5)
-                    }
-                    if drawnPath.count > 1 {
-                        MapPolyline(coordinates: drawnPath)
-                            .stroke(LocusTheme.accentSecondary, style: StrokeStyle(lineWidth: 4, dash: [6, 4]))
-                    }
+                    pinAnnotation(proxy: proxy)
+                    spoofAnnotation
+                    routeOverlays
                 }
                 .mapStyle(mapStyle)
                 .mapControlVisibility(.hidden)
@@ -122,38 +62,129 @@ struct MapHomeView: View {
         .onChange(of: session.pin?.latitude) { _, newValue in
             if newValue == nil { pinSelected = false }
         }
+        .onChange(of: session.telemetry?.distanceTravelled) { _, _ in
+            guard followsDrive, let simulated = session.simulated, session.isRouting else { return }
+            position = .region(MKCoordinateRegion(
+                center: simulated,
+                latitudinalMeters: 500,
+                longitudinalMeters: 500
+            ))
+        }
         .onReceive(NotificationCenter.default.publisher(for: .locusImportGPX)) { note in
             guard let url = note.object as? URL else { return }
             importGPX(url)
         }
-        .fileImporter(isPresented: $showGPXImporter, allowedContentTypes: [.xml, .data], allowsMultipleSelection: false) { result in
+        .fileImporter(
+            isPresented: $showGPXImporter,
+            allowedContentTypes: [.xml, .data],
+            allowsMultipleSelection: false
+        ) { result in
             if case .success(let urls) = result, let url = urls.first {
                 importGPX(url)
             }
         }
         .sheet(isPresented: $showRouteSheet) {
             RoutePlannerSheet(
-                start: $routeStart,
-                end: $routeEnd,
-                isRouting: $isRouting,
-                onBuild: buildRoadRoute,
+                workspace: workspace,
                 onPlay: playRoute,
                 onImportGPX: { showGPXImporter = true },
                 onExportGPX: exportGPX,
-                onUseDrawn: {
-                    routeCoords = RouteBuilder.sample(coordinates: drawnPath, every: 10)
-                    drawnPath.removeAll()
-                    drawMode = false
-                }
+                onFocus: focus(on:)
             )
             .presentationDetents([.medium, .large])
+            .environmentObject(session)
+        }
+    }
+
+    // MARK: - Map content
+
+    @MapContentBuilder
+    private func pinAnnotation(proxy: MapProxy) -> some MapContent {
+        if let pin = session.pin {
+            Annotation("", coordinate: pin, anchor: .bottom) {
+                MapDropPin(
+                    selected: pinSelected,
+                    isDragging: isDraggingPin,
+                    onSelect: {
+                        searchFocused = false
+                        suppressNextMapTap = true
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                            pinSelected.toggle()
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            suppressNextMapTap = false
+                        }
+                    },
+                    onRemove: {
+                        suppressNextMapTap = true
+                        withAnimation {
+                            session.pin = nil
+                            pinSelected = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            suppressNextMapTap = false
+                        }
+                    },
+                    onDragBegan: {
+                        searchFocused = false
+                        suppressNextMapTap = true
+                        pinSelected = false
+                        isDraggingPin = true
+                    },
+                    onDragMoved: { globalPoint in
+                        if let coord = proxy.convert(globalPoint, from: .global) {
+                            session.pin = coord
+                        }
+                    },
+                    onDragEnded: {
+                        isDraggingPin = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            suppressNextMapTap = false
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    @MapContentBuilder
+    private var spoofAnnotation: some MapContent {
+        if let sim = session.simulated {
+            Annotation("Spoof", coordinate: sim) {
+                SpoofMarker(
+                    course: session.telemetry?.course,
+                    isMoving: session.isRouting && !(session.telemetry?.isStopped ?? true)
+                )
+            }
+        }
+    }
+
+    /// Alternatives are drawn faintly underneath so picking between them is a
+    /// map decision, not a list decision.
+    @MapContentBuilder
+    private var routeOverlays: some MapContent {
+        ForEach(workspace.routes) { route in
+            if route.id != workspace.selectedRoute?.id, route.coordinates.count > 1 {
+                MapPolyline(coordinates: route.coordinates)
+                    .stroke(Color.primary.opacity(0.28), lineWidth: 4)
+            }
+        }
+
+        if let selected = workspace.selectedRoute, selected.coordinates.count > 1 {
+            MapPolyline(coordinates: selected.coordinates)
+                .stroke(LocusTheme.accent, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+        }
+
+        if workspace.drawnPath.count > 1 {
+            MapPolyline(coordinates: workspace.drawnPath)
+                .stroke(LocusTheme.accentSecondary, style: StrokeStyle(lineWidth: 4, dash: [6, 4]))
         }
     }
 
     private func placePin(at point: CGPoint, proxy: MapProxy) {
         guard let coord = proxy.convert(point, from: .local) else { return }
-        if drawMode {
-            drawnPath.append(coord)
+        if workspace.drawMode {
+            workspace.drawnPath.append(coord)
         } else {
             session.pin = coord
             pinPlaceName = nil
@@ -161,25 +192,53 @@ struct MapHomeView: View {
         }
     }
 
+    // MARK: - Chrome
+
+    /// One glass container for the whole top stack: the bar, its results and the
+    /// control chips sample the map once and blend where they meet, instead of
+    /// each trying to refract the others.
     private var topChrome: some View {
-        VStack(spacing: 10) {
-            StatusBarView()
+        LocusGlassGroup(spacing: 14) {
+            VStack(spacing: 10) {
+                StatusBarView()
+                    .locusGlassID("status", in: chromeGlass)
 
-            searchBar
+                searchBar
+                    .locusGlassID("search", in: chromeGlass)
 
-            if !searchText.isEmpty && !search.results.isEmpty {
-                searchResults
-            }
+                if !searchText.isEmpty && !search.results.isEmpty {
+                    searchResults
+                        .locusGlassID("results", in: chromeGlass)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
-            HStack(alignment: .center, spacing: 10) {
-                mapChromeButtons
-                Spacer(minLength: 0)
-                locateButton
+                HStack(alignment: .center, spacing: 10) {
+                    mapChromeButtons
+                        .locusGlassID("chips", in: chromeGlass)
+
+                    if session.isRouting {
+                        followChip
+                            .locusGlassID("follow", in: chromeGlass)
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    }
+
+                    Spacer(minLength: 0)
+                    locateButton
+                        .locusGlassID("locate", in: chromeGlass)
+                }
+
+                if workspace.drawMode {
+                    drawModeBanner
+                        .locusGlassID("draw", in: chromeGlass)
+                        .transition(.scale(scale: 0.92).combined(with: .opacity))
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 2)
         .safeAreaPadding(.top, 8)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: search.results.count)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: workspace.drawMode)
     }
 
     private var searchBar: some View {
@@ -190,9 +249,7 @@ struct MapHomeView: View {
                 .textInputAutocapitalization(.words)
                 .focused($searchFocused)
                 .submitLabel(.search)
-                .onSubmit {
-                    searchFocused = false
-                }
+                .onSubmit { searchFocused = false }
                 .onChange(of: searchText) { _, value in
                     search.query = value
                 }
@@ -209,12 +266,10 @@ struct MapHomeView: View {
                 .accessibilityLabel("Clear and dismiss keyboard")
             }
             if searchFocused {
-                Button("Done") {
-                    searchFocused = false
-                }
-                .font(.subheadline.weight(.semibold))
-                .buttonStyle(.plain)
-                .foregroundStyle(LocusTheme.accent)
+                Button("Done") { searchFocused = false }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(LocusTheme.accent)
             }
         }
         .padding(12)
@@ -249,23 +304,33 @@ struct MapHomeView: View {
 
     private var mapChromeButtons: some View {
         HStack(spacing: 4) {
-            chromeIconButton("square.3.layers.3d") {
+            chromeIconButton("square.3.layers.3d", label: "Map style") {
                 session.mapStyleIndex = (session.mapStyleIndex + 1) % 3
             }
-            chromeIconButton("point.topleft.down.to.point.bottomright.curvepath") {
+
+            chromeIconButton(
+                "point.topleft.down.to.point.bottomright.curvepath",
+                label: "Routes",
+                isOn: workspace.hasPlayablePath
+            ) {
                 showRouteSheet = true
             }
-            chromeIconButton(drawMode ? "pencil.tip.crop.circle.badge.minus" : "pencil.tip.crop.circle") {
-                drawMode.toggle()
-                if !drawMode { drawnPath.removeAll() }
+
+            chromeIconButton(
+                workspace.drawMode ? "pencil.tip.crop.circle.badge.minus" : "pencil.tip.crop.circle",
+                label: workspace.drawMode ? "Stop drawing" : "Draw a path",
+                isOn: workspace.drawMode
+            ) {
+                workspace.drawMode.toggle()
+                if !workspace.drawMode { workspace.drawnPath.removeAll() }
             }
-            .foregroundStyle(drawMode ? LocusTheme.accentSecondary : .primary)
 
             if session.pin != nil {
-                chromeIconButton("star.circle") {
+                chromeIconButton("star.circle", label: "Save this place") {
                     if let pin = session.pin {
                         let name = session.suggestedFavoriteName(for: pin, fallback: pinPlaceName)
                         session.addFavorite(name: name, coordinate: pin)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }
                 }
             }
@@ -275,21 +340,60 @@ struct MapHomeView: View {
         .contentShape(Capsule())
     }
 
-    private var locateButton: some View {
+    /// While a route plays the camera tracks the car. This is the way out of
+    /// that, so the map can be panned somewhere else mid-drive without the next
+    /// fix yanking it back.
+    private var followChip: some View {
         Button {
-            searchFocused = false
-            goToCurrentLocation()
+            withAnimation(.snappy) { followsDrive.toggle() }
         } label: {
-            Image(systemName: "location.fill")
-                .font(.body.weight(.semibold))
-                .frame(width: 48, height: 48)
-                .contentShape(Circle())
+            HStack(spacing: 6) {
+                Image(systemName: followsDrive ? "location.viewfinder" : "location.slash")
+                Text(followsDrive ? "Following" : "Free")
+                    .lineLimit(1)
+            }
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .locusGlass(.interactive, in: Circle())
-        .foregroundStyle(.primary)
-        .contentShape(Circle())
-        .accessibilityLabel("Current location")
+        .foregroundStyle(followsDrive ? LocusTheme.accent : .secondary)
+        .locusGlass(.clear, in: Capsule())
+        .accessibilityLabel(followsDrive ? "Stop following the drive" : "Follow the drive")
+    }
+
+    private var drawModeBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "hand.tap.fill")
+                .foregroundStyle(LocusTheme.accentSecondary)
+            Text(workspace.drawnPath.isEmpty
+                 ? "Tap the map to lay down a path."
+                 : "\(workspace.drawnPath.count) points — open Routes to drive it.")
+                .font(.caption.weight(.medium))
+            Spacer(minLength: 0)
+            if !workspace.drawnPath.isEmpty {
+                Button("Undo") { workspace.drawnPath.removeLast() }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(LocusTheme.accent)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .locusGlass(.clear, in: Capsule())
+        .contentShape(Capsule())
+    }
+
+    private var locateButton: some View {
+        GlassIconButton(
+            systemName: "location.fill",
+            accessibilityLabel: "Current location"
+        ) {
+            searchFocused = false
+            followsDrive = true
+            goToCurrentLocation()
+        }
     }
 
     /// Centers on the spoofed fix while spoofing, otherwise the real GPS —
@@ -322,86 +426,89 @@ struct MapHomeView: View {
         }
     }
 
-    private func chromeIconButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+    private func chromeIconButton(
+        _ systemName: String,
+        label: String,
+        isOn: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
+                .frame(width: LocusMetrics.controlSide, height: LocusMetrics.controlSide)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
+        .foregroundStyle(isOn ? LocusTheme.accentSecondary : .primary)
+        .accessibilityLabel(label)
     }
 
+    // MARK: - Actions
+
     private func select(completion: MKLocalSearchCompletion) {
-        Task {
+        Task { @MainActor in
             let request = MKLocalSearch.Request(completion: completion)
             if let response = try? await MKLocalSearch(request: request).start(),
                let item = response.mapItems.first {
                 let coord = item.placemark.coordinate
                 let title = item.name ?? completion.title
-                await MainActor.run {
-                    session.pin = coord
-                    pinPlaceName = title
-                    position = .region(MKCoordinateRegion(center: coord, latitudinalMeters: 1200, longitudinalMeters: 1200))
-                    searchText = ""
-                    search.query = ""
-                    searchFocused = false
-                    session.addFavorite(name: title, coordinate: coord)
-                    session.pushNamedRecent(name: title, coordinate: coord)
-                }
-            }
-        }
-    }
-
-    private func buildRoadRoute() {
-        guard let start = routeStart ?? session.simulated ?? session.pin,
-              let end = routeEnd else {
-            session.lastError = "Set a route start and end."
-            return
-        }
-        isRouting = true
-        Task {
-            do {
-                let coords = try await RouteBuilder.roadRoute(from: start, to: end, mode: session.travelMode)
-                await MainActor.run {
-                    routeCoords = coords
-                    isRouting = false
-                }
-            } catch {
-                await MainActor.run {
-                    isRouting = false
-                    session.lastError = error.localizedDescription
-                }
+                session.pin = coord
+                pinPlaceName = title
+                position = .region(MKCoordinateRegion(
+                    center: coord,
+                    latitudinalMeters: 1200,
+                    longitudinalMeters: 1200
+                ))
+                searchText = ""
+                search.query = ""
+                searchFocused = false
+                session.addFavorite(name: title, coordinate: coord)
+                session.pushNamedRecent(name: title, coordinate: coord)
             }
         }
     }
 
     private func playRoute() {
-        let path = routeCoords.isEmpty ? drawnPath : routeCoords
-        guard path.count >= 2 else {
-            session.lastError = "Build or draw a route first."
+        guard workspace.hasPlayablePath else {
+            session.lastError = "Find a route, draw one, or import a GPX file first."
             return
         }
         showRouteSheet = false
-        session.followRoute(path, pairing: pairing)
+        followsDrive = true
+        session.startRoute(
+            workspace.activeCoordinates,
+            pairing: pairing,
+            expectedSpeed: workspace.activeExpectedSpeed
+        )
+    }
+
+    private func focus(on coordinates: [CLLocationCoordinate2D]) {
+        guard let region = Self.region(covering: coordinates) else { return }
+        followsDrive = false
+        withAnimation(.easeInOut(duration: 0.4)) {
+            position = .region(region)
+        }
     }
 
     private func importGPX(_ url: URL) {
         do {
             let coords = try GPXCodec.parse(url)
-            routeCoords = RouteBuilder.sample(coordinates: coords, every: 10)
+            workspace.adoptRawPath(
+                RouteBuilder.sample(coordinates: coords, every: 10),
+                named: url.deletingPathExtension().lastPathComponent
+            )
+            workspace.drawnPath.removeAll()
             if let first = coords.first {
                 session.pin = first
-                position = .region(MKCoordinateRegion(center: first, latitudinalMeters: 2000, longitudinalMeters: 2000))
             }
+            focus(on: coords)
         } catch {
             session.lastError = error.localizedDescription
         }
     }
 
     private func exportGPX() {
-        let path = routeCoords.isEmpty ? drawnPath : routeCoords
+        let path = workspace.activeCoordinates
         guard !path.isEmpty else {
             session.lastError = "Nothing to export."
             return
@@ -410,14 +517,68 @@ struct MapHomeView: View {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Locus-Route.gpx")
         do {
             try gpx.data(using: .utf8)?.write(to: url)
-            let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
             if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let root = scene.keyWindow?.rootViewController {
-                root.present(av, animated: true)
+                root.present(activity, animated: true)
             }
         } catch {
             session.lastError = error.localizedDescription
         }
+    }
+
+    /// Region that frames a whole path, with a little breathing room.
+    static func region(covering coordinates: [CLLocationCoordinate2D]) -> MKCoordinateRegion? {
+        guard let first = coordinates.first else { return nil }
+        var minLat = first.latitude, maxLat = first.latitude
+        var minLon = first.longitude, maxLon = first.longitude
+        for coordinate in coordinates {
+            minLat = min(minLat, coordinate.latitude)
+            maxLat = max(maxLat, coordinate.latitude)
+            minLon = min(minLon, coordinate.longitude)
+            maxLon = max(maxLon, coordinate.longitude)
+        }
+        return MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: (minLat + maxLat) / 2,
+                longitude: (minLon + maxLon) / 2
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: max(0.004, (maxLat - minLat) * 1.4),
+                longitudeDelta: max(0.004, (maxLon - minLon) * 1.4)
+            )
+        )
+    }
+}
+
+/// The spoofed fix. While a route plays it points the way the car is going, so
+/// the map reads as motion rather than a jumping dot.
+struct SpoofMarker: View {
+    var course: CLLocationDirection?
+    var isMoving: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(LocusTheme.accent.opacity(0.22))
+                .frame(width: 44, height: 44)
+
+            if let course, isMoving {
+                Image(systemName: "location.north.fill")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(6)
+                    .background(Circle().fill(LocusTheme.accent))
+                    .rotationEffect(.degrees(course))
+                    .animation(.easeOut(duration: 0.3), value: course)
+            } else {
+                Circle()
+                    .fill(LocusTheme.accent)
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().stroke(.white, lineWidth: 2))
+            }
+        }
+        .accessibilityLabel("Simulated location")
     }
 }
 

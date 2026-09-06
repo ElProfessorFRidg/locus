@@ -12,13 +12,33 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 ## Features
 
 - One-tap teleport (map pin or place search)
+- **Built-in tunnel** — Locus raises the loopback tunnel itself, no second app to launch
 - Live joystick — walk / run / cycle / drive with light speed variation
-- Walk/Drive routing on real roads & footpaths (MapKit)
+- Walk/Drive routing on real roads & footpaths (MapKit), with Apple's alternatives to pick from
+- **Driving parameters** — respect the limit +10%, acceleration and braking, corner grip, traffic, junction stops, GPS scatter, lane offset, 0.5×–8× playback, loop / back-and-forth
+- Live speedometer with a speed-limit sign while a route plays
 - Draw a path or import / export GPX
 - Background keep-alive + live status bar + drop alerts
 - Favorites & recents
 - First-run setup walkthrough
+- Liquid Glass UI on iOS 26, with a matched material fallback on 18–25
 - Fully on-device — no analytics, nothing uploaded
+
+## Driving a route
+
+Routes are played through a small vehicle model rather than replayed point by point. A look-ahead controller brakes *into* corners and stops instead of snapping speed at them, and everything that shapes it is a parameter:
+
+| | |
+| --- | --- |
+| **Speed** | Estimated road limit, a fixed speed, or the travel mode's pace |
+| **Tolerance** | The `+10%` dial (−30% … +50%), with a live preview of what each sign becomes |
+| **Car** | Presets, or set acceleration, braking and a cornering grip budget yourself |
+| **Traffic** | Clear → gridlock, as a slow random walk rather than a flicker |
+| **Stops** | Junction stops, how often you're caught, how long you wait |
+| **Realism** | Speed wobble, GPS scatter, lane offset, drive on the left |
+| **Playback** | 0.5×–8× time, 0.5–4 Hz fix rate, start delay, loop / back-and-forth / return once |
+
+**Speed limits are estimated, not looked up.** MapKit publishes no posted-limit data. Locus derives a limit from the pace Apple expects for the route combined with how the road bends and how often it turns, then snaps the result to values roads are actually signed at (30/50/90/130, or 25/35/55/70 in mph). Treat it as a good reading of the road, not a legal figure.
 
 ## Install
 
@@ -42,7 +62,13 @@ Locus uses the MIT-licensed [idevice](https://github.com/jkcoxson/idevice) FFI t
 
 **iOS 18–26:** import an **RPPairing** file once from [idevice_pair](https://github.com/jkcoxson/idevice_pair/releases).
 
-Also install **[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044)** (loopback tunnel, default `10.7.0.1`), then sideload Locus.
+### The tunnel
+
+Reaching that service needs a loopback tunnel — an interface the phone can talk to *itself* on at `10.7.0.1`. Locus ships one as a packet-tunnel extension, so setup is a single **Turn on the tunnel** button and iOS' one-time VPN approval. Nothing leaves the device: the tunnel forwards no traffic anywhere.
+
+If the first packet-rewrite strategy can't pass traffic on your network, Locus tries the rest and keeps the one that works. Settings → **Tunnel** shows which is live, and the tunnel log shows what the extension itself reported.
+
+**LiveContainer can't load app extensions,** so there is no built-in tunnel there — install **[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044)** and connect it instead. Both use `10.7.0.1` by default, so Locus works with whichever tunnel is up.
 
 Start a teleport on Wi‑Fi first; the session can keep working on cellular afterward.
 
@@ -58,7 +84,11 @@ Locus is for system-level teleporting. It isn’t a Pokémon GO client or an ant
 
 ## Build
 
-Building from source needs an Apple Developer account (free or paid) for code signing. The published IPA does **not** — just sideload it.
+Building from source needs an Apple Developer account for code signing. The published IPA does **not** — just sideload it.
+
+> **Network Extension capability.** The built-in tunnel is a packet-tunnel extension, and Apple only grants `packet-tunnel-provider` to **paid** developer accounts. With a free Apple ID the `LocusTunnel` target won't sign; drop it from `project.yml` (remove the target and the app's `dependencies` entry) and Locus falls back to the LocalDevVPN app at runtime — `TunnelController` detects the missing `.appex` and says so.
+>
+> The App Group `group.com.chrismack.locus` is only used for the tunnel's diagnostic log. If it isn't provisioned, the log is empty and Settings says why; nothing else changes.
 
 1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) if needed: `brew install xcodegen`
 2. Set your **Team ID** in `project.yml` (`DEVELOPMENT_TEAM`), *or* pick your team under Xcode → Signing & Capabilities after generating the project.
@@ -77,6 +107,10 @@ xcodebuild -project Locus.xcodeproj -scheme Locus -configuration Release \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM=YOUR_TEAM_ID build
 ```
 
-## License
+## Credits & license
 
-MIT. `Vendor/idevice` contains the idevice FFI (MIT). Locus is an independent open-source project and is not affiliated with Mirage / Wapixel.
+MIT. `Vendor/idevice` contains the idevice FFI (MIT).
+
+The built-in tunnel (`LocusTunnel/`) is **based on and uses code from [LocalDevVPN](https://github.com/ElProfessorFRidg/LocalDevVPN) (formerly StosVPN)** by Stossy11 and the SideStore Team, used under the StosVPN License. The packet-rewrite strategies and the cellular-rebind workaround come from that project; the method ladder, the connectivity-confirmed connect and the runtime bundle-ID discovery are Locus'. The same attribution appears in the app under Settings → About.
+
+Locus is an independent open-source project and is not affiliated with Mirage / Wapixel.

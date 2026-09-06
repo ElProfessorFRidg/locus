@@ -1,11 +1,15 @@
-import SwiftUI
 import NetworkExtension
+import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var session: SpoofSession
     @EnvironmentObject private var pairing: PairingStore
+    @StateObject private var tunnel = TunnelController.shared
+
     @State private var showSettings = false
     @State private var showPlaces = false
+
+    @Namespace private var bottomGlass
 
     var body: some View {
         // Bottom chrome is a sibling overlay aligned to the bottom — no full-screen
@@ -13,18 +17,50 @@ struct RootView: View {
         ZStack(alignment: .bottom) {
             MapHomeView()
 
-            BottomControlsView(
-                showSettings: $showSettings,
-                showPlaces: $showPlaces
-            )
+            LocusGlassGroup(spacing: 16) {
+                VStack(spacing: 10) {
+                    if let telemetry = session.telemetry, session.drive.showHUD {
+                        DriveHUDView(
+                            telemetry: telemetry,
+                            profile: session.drive,
+                            isPaused: session.isRoutePaused,
+                            onTogglePause: { session.toggleRoutePause() },
+                            onStop: { session.cancelRoute() }
+                        )
+                        .locusGlassID("hud", in: bottomGlass)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    if let countdown = session.routeCountdown {
+                        CountdownPill(seconds: countdown)
+                            .locusGlassID("countdown", in: bottomGlass)
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    }
+
+                    BottomControlsView(
+                        showSettings: $showSettings,
+                        showPlaces: $showPlaces
+                    )
+                    .locusGlassID("tray", in: bottomGlass)
+                }
+            }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: session.telemetry == nil)
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.routeCountdown)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
         .sheet(isPresented: $showPlaces) {
             PlacesView()
+        }
+        .task {
+            // One quiet attempt on launch: if the loopback subnet is already up
+            // this does nothing at all, so it costs a check, not a VPN prompt.
+            if tunnel.autoConnect {
+                await tunnel.ensureConnected()
+            }
         }
         .alert("Locus", isPresented: Binding(
             get: { session.lastError != nil },
@@ -37,40 +73,91 @@ struct RootView: View {
     }
 }
 
+/// Shown during `startDelaySeconds`, so a delayed start doesn't look like a
+/// button that did nothing.
+struct CountdownPill: View {
+    let seconds: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "timer")
+                .foregroundStyle(LocusTheme.accentSecondary)
+            Text("Setting off in \(seconds)…")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .contentTransition(.numericText(countsDown: true))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .locusGlass(.clear, in: Capsule())
+        .contentShape(Capsule())
+    }
+}
+
+// MARK: - Status bar
+
+/// One line that always answers "why isn't this working". Spoof status wins when
+/// something is being spoofed; otherwise it reports the tunnel, because a
+/// missing tunnel is the reason a teleport fails nine times out of ten.
 struct StatusBarView: View {
     @EnvironmentObject private var session: SpoofSession
+    @StateObject private var tunnel = TunnelController.shared
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var tunnelConnected = LocalDevVPN.isConnected
+    @State private var loopbackUp = TunnelController.loopbackReachable
+    @State private var isConnecting = false
 
     private enum Display {
-        case notSpoofing
-        case connectVPN
-        case status(String)
+        case spoof(String)
+        case ready
+        case tunnelAction(String)
+        case tunnelBusy(String)
+        case tunnelProblem(String)
     }
 
     private var display: Display {
         switch session.status {
-        case .idle:
-            return tunnelConnected ? .notSpoofing : .connectVPN
-        case .connecting:
-            return .status("Connecting…")
-        case .active:
-            return .status("Spoofing")
-        case .reconnecting:
-            return .status("Reconnecting…")
+        case .connecting: return .spoof("Connecting…")
+        case .active: return .spoof("Spoofing")
+        case .reconnecting: return .spoof("Reconnecting…")
         case .dropped(let reason):
-            return .status(reason.isEmpty ? "Disconnected" : "Disconnected — \(reason)")
+            return .spoof(reason.isEmpty ? "Disconnected" : "Disconnected — \(reason)")
+        case .idle:
+            break
+        }
+
+        if loopbackUp { return .ready }
+
+        switch tunnel.state {
+        case .connecting:
+            return .tunnelBusy("Starting tunnel…")
+        case .failed(let reason):
+            return .tunnelProblem(reason)
+        case .unavailable:
+            return .tunnelAction("Connect LocalDevVPN")
+        case .idle, .connected:
+            return isConnecting
+                ? .tunnelBusy("Starting tunnel…")
+                : .tunnelAction("Tap to start the tunnel")
+        }
+    }
+
+    private var title: String {
+        switch display {
+        case .spoof(let text): return text
+        case .ready: return "Not Spoofing"
+        case .tunnelAction(let text): return text
+        case .tunnelBusy(let text): return text
+        case .tunnelProblem: return "Tunnel didn’t connect"
         }
     }
 
     private var color: Color {
         switch display {
-        case .notSpoofing:
-            return Color.primary.opacity(0.55)
-        case .connectVPN:
-            return LocusTheme.statusWarn
-        case .status:
+        case .ready: return Color.primary.opacity(0.55)
+        case .tunnelAction, .tunnelBusy: return LocusTheme.statusWarn
+        case .tunnelProblem: return LocusTheme.statusBad
+        case .spoof:
             switch session.status {
             case .active: return LocusTheme.statusGood
             case .connecting, .reconnecting: return LocusTheme.statusWarn
@@ -80,80 +167,118 @@ struct StatusBarView: View {
         }
     }
 
-    private var title: String {
+    private var isTappable: Bool {
         switch display {
-        case .notSpoofing: return "Not Spoofing"
-        case .connectVPN: return "Connect LocalDevVPN"
-        case .status(let text): return text
+        case .tunnelAction, .tunnelProblem: return true
+        default: return false
         }
     }
 
     var body: some View {
         Group {
-            if case .connectVPN = display {
-                Button(action: LocalDevVPN.openOrInstall) {
-                    statusContent
-                }
-                .buttonStyle(.plain)
+            if isTappable {
+                Button(action: handleTap) { statusContent }
+                    .buttonStyle(.plain)
             } else {
                 statusContent
             }
         }
-        .onAppear { refreshTunnel() }
+        .onAppear { refresh() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { refreshTunnel() }
+            if phase == .active { refresh() }
         }
-        .onChange(of: session.status) { _, _ in
-            refreshTunnel()
-        }
+        .onChange(of: session.status) { _, _ in refresh() }
         .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
-            // LocalDevVPN connection changes show up here even though we don’t own the VPN.
-            refreshTunnel()
+            // Covers a tunnel raised by LocalDevVPN as well as our own.
+            refresh()
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                refreshTunnel()
+                refresh()
             }
         }
     }
 
     private var statusContent: some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-                .shadow(color: color.opacity(0.7), radius: 4)
+            if case .tunnelBusy = display {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 8, height: 8)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: color.opacity(0.7), radius: 4)
+            }
 
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
+                .lineLimit(1)
 
             Spacer(minLength: 8)
 
-            if case .connectVPN = display {
-                Image(systemName: "lock.shield.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(LocusTheme.accent)
-            } else if case .active = session.status, let sim = session.simulated {
+            trailing
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .locusGlass(.clear, in: RoundedRectangle(cornerRadius: LocusMetrics.barRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: LocusMetrics.barRadius, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(isTappable ? "Starts the loopback tunnel Locus needs." : "")
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        switch display {
+        case .tunnelAction:
+            Image(systemName: TunnelController.isEmbedded ? "bolt.horizontal.circle.fill" : "arrow.up.forward.app.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(LocusTheme.accent)
+        case .tunnelProblem:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(LocusTheme.statusBad)
+        case .spoof:
+            if case .active = session.status, let sim = session.simulated {
                 Text(String(format: "%.4f, %.4f", sim.latitude, sim.longitude))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
+        case .ready, .tunnelBusy:
+            EmptyView()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .locusGlass(.clear, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private func refreshTunnel() {
-        tunnelConnected = LocalDevVPN.isConnected
+    private func handleTap() {
+        guard TunnelController.isEmbedded else {
+            LocalDevVPN.openOrInstall()
+            return
+        }
+        // A previous failure has a reason attached; surface it rather than
+        // silently retrying the same thing.
+        if case .failed(let reason) = tunnel.state {
+            session.lastError = reason
+        }
+        isConnecting = true
+        Task {
+            await tunnel.connect()
+            isConnecting = false
+            refresh()
+        }
+    }
+
+    private func refresh() {
+        loopbackUp = TunnelController.loopbackReachable
     }
 }
+
+// MARK: - Bottom tray
 
 struct BottomControlsView: View {
     @EnvironmentObject private var session: SpoofSession
@@ -161,7 +286,9 @@ struct BottomControlsView: View {
     @Binding var showSettings: Bool
     @Binding var showPlaces: Bool
 
-    private let trayShape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+    @Namespace private var modeSelection
+
+    private let trayShape = RoundedRectangle(cornerRadius: LocusMetrics.trayRadius, style: .continuous)
 
     var body: some View {
         VStack(spacing: 12) {
@@ -171,123 +298,133 @@ struct BottomControlsView: View {
                 }
                 .frame(width: 148, height: 148)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+                .transition(.scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity))
             }
 
-            HStack(spacing: 8) {
-                ForEach(TravelMode.allCases) { mode in
-                    let selected = session.travelMode == mode
-                    Button {
-                        session.travelMode = mode
-                    } label: {
-                        Image(systemName: mode.icon)
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(selected ? .black : .primary)
-                            .frame(width: 44, height: 40)
-                            .background(
-                                Capsule().fill(selected ? LocusTheme.accent : Color.primary.opacity(0.08))
-                            )
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-                Spacer(minLength: 0)
-            }
+            travelModePicker
 
             HStack(spacing: 10) {
-                trayIcon("gearshape.fill") { showSettings = true }
-                trayIcon("star.fill") { showPlaces = true }
-
-                Button {
-                    if session.joystickActive {
-                        session.stopJoystick()
-                    } else {
-                        session.startJoystick(pairing: pairing)
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "dot.circle.and.hand.point.up.left.fill")
-                        Text(session.joystickActive ? "On" : "Joy")
-                            .lineLimit(1)
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(session.joystickActive ? .black : .primary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(
-                        Capsule().fill(session.joystickActive ? LocusTheme.accentSecondary : Color.primary.opacity(0.08))
-                    )
-                    .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-
-                if session.isSpoofing {
-                    Button {
-                        session.stop(pairing: pairing)
-                    } label: {
-                        Text("Stop")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.white)
-                            .frame(minWidth: 72)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 8)
-                            .background(Capsule().fill(LocusTheme.danger))
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Button {
-                        guard let pin = session.pin else {
-                            session.lastError = "Tap the map to drop a pin first."
-                            return
-                        }
-                        session.teleport(to: pin, pairing: pairing)
-                    } label: {
-                        Text("Teleport")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.black)
-                            .frame(minWidth: 96)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 10)
-                            .background(Capsule().fill(LocusTheme.accent))
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(session.isBusy)
-                }
+                trayIcon("gearshape.fill", label: "Settings") { showSettings = true }
+                trayIcon("star.fill", label: "Saved places") { showPlaces = true }
+                joystickButton
+                primaryAction
             }
         }
         .padding(14)
         .locusGlass(.regular, in: trayShape)
         // Whole tray absorbs taps so near-misses don't fall through to the map.
         .contentShape(trayShape)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: session.joystickActive)
+        .animation(.snappy, value: session.travelMode)
     }
 
-    private func trayIcon(_ systemName: String, action: @escaping () -> Void) -> some View {
+    /// Segmented by hand rather than a `Picker`, so the selection can slide
+    /// between chips with a matched-geometry pill instead of snapping.
+    private var travelModePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(TravelMode.allCases) { mode in
+                let selected = session.travelMode == mode
+                Button {
+                    session.travelMode = mode
+                } label: {
+                    Image(systemName: mode.icon)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(selected ? .black : .primary)
+                        .frame(width: 46, height: 38)
+                        .background {
+                            if selected {
+                                Capsule()
+                                    .fill(LocusTheme.accent)
+                                    .matchedGeometryEffect(id: "modePill", in: modeSelection)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mode.title)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.primary.opacity(0.06)))
+    }
+
+    private var joystickButton: some View {
+        Button {
+            if session.joystickActive {
+                session.stopJoystick()
+            } else {
+                session.startJoystick(pairing: pairing)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "dot.circle.and.hand.point.up.left.fill")
+                Text(session.joystickActive ? "On" : "Joy")
+                    .lineLimit(1)
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(session.joystickActive ? .black : .primary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                Capsule().fill(
+                    session.joystickActive ? LocusTheme.accentSecondary : Color.primary.opacity(0.08)
+                )
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(session.joystickActive ? "Turn joystick off" : "Turn joystick on")
+    }
+
+    @ViewBuilder
+    private var primaryAction: some View {
+        if session.isSpoofing {
+            Button {
+                session.stop(pairing: pairing)
+            } label: {
+                Text("Stop")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 72)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 8)
+                    .background(Capsule().fill(LocusTheme.danger))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button {
+                guard let pin = session.pin else {
+                    session.lastError = "Tap the map to drop a pin first."
+                    return
+                }
+                session.teleport(to: pin, pairing: pairing)
+            } label: {
+                Text("Teleport")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.black)
+                    .frame(minWidth: 96)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 10)
+                    .background(Capsule().fill(LocusTheme.accent))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(session.isBusy)
+        }
+    }
+
+    private func trayIcon(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(.primary)
-                .frame(width: 44, height: 44)
+                .frame(width: LocusMetrics.controlSide, height: LocusMetrics.controlSide)
                 .background(Circle().fill(Color.primary.opacity(0.08)))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-struct IconButton: View {
-    let systemName: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .locusGlass(.interactive, in: Circle())
-        .foregroundStyle(.primary)
+        .accessibilityLabel(label)
     }
 }
