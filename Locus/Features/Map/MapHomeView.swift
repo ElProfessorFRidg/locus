@@ -5,8 +5,10 @@ struct MapHomeView: View {
     @EnvironmentObject private var session: SpoofSession
     @EnvironmentObject private var pairing: PairingStore
 
+    /// Owned by `RootView`: the bottom chrome acts on it too.
+    @ObservedObject var workspace: RouteWorkspace
+
     @StateObject private var search = PlaceSearchCompleter()
-    @StateObject private var workspace = RouteWorkspace()
 
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var searchText = ""
@@ -1033,15 +1035,7 @@ struct MapHomeView: View {
         }
         showRouteSheet = false
         followsDrive = true
-        session.startRoute(
-            workspace.activeCoordinates,
-            pairing: pairing,
-            expectedSpeed: workspace.activeExpectedSpeed,
-            name: workspace.selectedRoute?.name ?? "Route",
-            overrides: workspace.overrides,
-            recordedSpeed: workspace.recordedSpeedSampler,
-            recordedTimes: workspace.selectedRoute?.recordedTimes
-        )
+        session.driveRoute(workspace, pairing: pairing)
     }
 
     private func focus(on coordinates: [CLLocationCoordinate2D]) {

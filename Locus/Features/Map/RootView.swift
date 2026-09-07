@@ -9,16 +9,52 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var showPlaces = false
 
+    /// Owned here rather than by the map, because the bottom chrome acts on it
+    /// too — the trip summary offers to drive the route again, or back.
+    @StateObject private var workspace = RouteWorkspace()
+
     @Namespace private var bottomGlass
 
     var body: some View {
         // Bottom chrome is a sibling overlay aligned to the bottom — no full-screen
         // Spacer layer that can steal / pass map taps through the tray.
         ZStack(alignment: .bottom) {
-            MapHomeView()
+            MapHomeView(workspace: workspace)
 
             LocusGlassGroup(spacing: 16) {
                 VStack(spacing: 10) {
+                    if let trip = session.lastTrip {
+                        TripSummaryView(
+                            trip: trip,
+                            profile: session.drive,
+                            economy: session.drive.showTripEconomy
+                                ? session.tripEconomy(distance: trip.distance)
+                                : nil,
+                            canSave: workspace.selectedRoute != nil && workspace.savedRouteID == nil,
+                            onDriveAgain: {
+                                session.lastTrip = nil
+                                session.driveRoute(workspace, pairing: pairing)
+                            },
+                            onReverse: {
+                                session.lastTrip = nil
+                                workspace.reverseSelectedRoute()
+                                session.driveRoute(workspace, pairing: pairing)
+                            },
+                            onSave: {
+                                guard let route = workspace.selectedRoute else { return }
+                                session.routeStore.save(
+                                    route,
+                                    named: route.name,
+                                    overrides: workspace.overrides
+                                )
+                                session.flash("Saved “\(route.name)”")
+                            },
+                            onDismiss: { session.lastTrip = nil }
+                        )
+                        .locusGlassID("trip", in: bottomGlass)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
                     if let telemetry = session.telemetry, session.drive.showHUD {
                         DriveHUDView(
                             telemetry: telemetry,
@@ -60,6 +96,7 @@ struct RootView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: session.telemetry == nil)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.routeCountdown)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.toast)
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: session.lastTrip)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()

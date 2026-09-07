@@ -401,6 +401,28 @@ final class RouteWorkspace: ObservableObject {
         }
     }
 
+    /// Turns the current route round so it can be driven back.
+    ///
+    /// The commonest thing to want after arriving. Corrections are dropped
+    /// rather than carried: they are keyed by distance along the route, and
+    /// distance 400 m going one way is not distance 400 m coming back.
+    func reverseSelectedRoute() {
+        guard let route = selectedRoute, route.coordinates.count > 1 else { return }
+        let back = BuiltRoute(
+            name: route.name.hasSuffix(", back") ? String(route.name.dropLast(6)) : "\(route.name), back",
+            coordinates: Array(route.coordinates.reversed()),
+            distance: route.distance,
+            expectedTravelTime: route.expectedTravelTime,
+            // A recorded pace played backwards is not a recording of anything.
+            recordedTimes: nil
+        )
+        routes = [back]
+        selectedRouteID = back.id
+        savedRouteID = nil
+        overrides = []
+        stops.reverse()
+    }
+
     /// Puts the drawn path onto real roads, keeping its shape.
     func snapDrawnPath(mode: TravelMode) async -> String? {
         guard drawnPath.count >= 2 else { return "Draw a path on the map first." }
@@ -424,5 +446,29 @@ final class RouteWorkspace: ObservableObject {
         } catch {
             return error.localizedDescription
         }
+    }
+}
+
+extension SpoofSession {
+    /// Drives whatever the workspace is currently holding.
+    ///
+    /// Lives here rather than in the map view because three places now start a
+    /// drive — the planner, the map, and the trip summary's "again" and "back"
+    /// — and each one assembling the same six arguments is three chances to
+    /// forget the recorded pace.
+    func driveRoute(_ workspace: RouteWorkspace, pairing: PairingStore) {
+        guard workspace.hasPlayablePath else {
+            lastError = "Find a route, draw one, or import a GPX file first."
+            return
+        }
+        startRoute(
+            workspace.activeCoordinates,
+            pairing: pairing,
+            expectedSpeed: workspace.activeExpectedSpeed,
+            name: workspace.selectedRoute?.name ?? "Route",
+            overrides: workspace.overrides,
+            recordedSpeed: workspace.recordedSpeedSampler,
+            recordedTimes: workspace.selectedRoute?.recordedTimes
+        )
     }
 }

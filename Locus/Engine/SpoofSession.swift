@@ -83,6 +83,27 @@ struct JoystickTelemetry: Equatable {
     var isMoving: Bool { speed > 0.05 }
 }
 
+/// What a finished drive amounted to.
+///
+/// The numbers were all being computed and none of them were ever shown: the
+/// HUD went away and that was the end of it. `tripEconomy` in particular had a
+/// consumption slider, a toggle, and nowhere at all to appear.
+struct TripSummary: Identifiable, Equatable {
+    let id = UUID()
+    var routeName: String
+    var distance: CLLocationDistance
+    /// Seconds of simulated time — what the drive would have taken in the world.
+    var simulatedSeconds: TimeInterval
+    /// Seconds you actually waited, which differs whenever the time scale isn't 1×.
+    var wallClockSeconds: TimeInterval
+    var laps: Int
+    var profileName: String
+
+    var averageSpeed: CLLocationSpeed {
+        simulatedSeconds > 1 ? distance / simulatedSeconds : 0
+    }
+}
+
 /// Live state of a route being driven, for the HUD.
 struct DriveTelemetry: Equatable {
     var speed: CLLocationSpeed = 0
@@ -150,6 +171,13 @@ final class SpoofSession: ObservableObject {
     @Published private(set) var isRoutePaused = false
     /// Countdown before the first fix, when `drive.startDelaySeconds` is set.
     @Published private(set) var routeCountdown: Int?
+    /// Set when a drive reaches its end, cleared when the summary is dismissed.
+    @Published var lastTrip: TripSummary?
+
+    /// Kept so the summary can report wall-clock time, which is not the same as
+    /// simulated time whenever the scale isn't 1×.
+    private var routeStartedAt: Date?
+    private var lastRouteName = "Route"
 
     private var resendTimer: Timer?
     private var healthTimer: Timer?
@@ -488,6 +516,9 @@ final class SpoofSession: ObservableObject {
         }
 
         isRoutePaused = false
+        routeStartedAt = Date()
+        lastRouteName = name
+        lastTrip = nil
         let opening = DriveTelemetry(totalDistance: basePlan.totalDistance)
         telemetry = opening
 
@@ -538,6 +569,24 @@ final class SpoofSession: ObservableObject {
 
     private func finishRoute(generation: Int) {
         guard generation == routeGeneration else { return }
+
+        // Arriving is the one moment of a drive worth marking, and it used to
+        // be the one that showed nothing: the HUD simply vanished after forty
+        // minutes. Only for a drive that actually reached the end — a cancel
+        // bumps the generation and never gets here.
+        if let telemetry, telemetry.distanceTravelled > 50 {
+            lastTrip = TripSummary(
+                routeName: lastRouteName,
+                distance: telemetry.distanceTravelled,
+                simulatedSeconds: telemetry.elapsed,
+                wallClockSeconds: routeStartedAt.map { Date().timeIntervalSince($0) } ?? telemetry.elapsed,
+                laps: telemetry.lap,
+                profileName: drive.name
+            )
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        routeStartedAt = nil
+
         routeTask = nil
         telemetry = nil
         isRoutePaused = false
