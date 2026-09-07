@@ -14,6 +14,9 @@ struct MapHomeView: View {
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
     @State private var showRouteSheet = false
+    /// Driven rather than free so arming a stop can drop the sheet off the map
+    /// it is asking you to tap.
+    @State private var routeDetent: PresentationDetent = .medium
     @State private var showGPXImporter = false
     @State private var pinSelected = false
     @State private var isDraggingPin = false
@@ -162,7 +165,7 @@ struct MapHomeView: View {
                 onExportGPX: exportGPX,
                 onFocus: focus(on:)
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.medium, .large], selection: $routeDetent)
             // The map underneath stays live at the medium detent. Without this
             // the planner is a modal over the thing it is planning on: you set
             // a stop, close the sheet to look, and reopen it — which is the
@@ -172,6 +175,13 @@ struct MapHomeView: View {
             // The corrections list is the preview's output, so make sure it
             // exists before the sheet that edits it opens.
             .onAppear { refreshPreview() }
+            .onChange(of: workspace.focusedStopID) { _, id in
+                // Arming a stop means "the next map tap is this one", and at
+                // the large detent the sheet covers the map that tap has to
+                // land on. The row says "Tap the map or search to set this
+                // one" — so get out of the way of the map.
+                if id != nil, routeDetent == .large { routeDetent = .medium }
+            }
         }
     }
 
