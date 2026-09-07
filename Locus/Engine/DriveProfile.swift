@@ -386,12 +386,20 @@ struct DriveProfile: Codable, Equatable, Identifiable {
     /// stops matching the other.
     var timeScaleClamped: Double { timeScale.clamped(to: 0.05...8.0) }
 
+    /// Both are clamped to the ranges their own controls offer, for the reason
+    /// above: the stored file is not the slider.
+    ///
+    /// A ceiling of zero is the dangerous one. Every point's ceiling becomes 0,
+    /// so the car's maximum speed is 0 everywhere — it never advances, never
+    /// reaches the end, and the drive runs until someone stops it. That reads
+    /// as a hang, which is the worst thing this app can do. The stepper's own
+    /// minimum is 10, so nothing reachable through the UI is being clipped.
     var fixedSpeedMetresPerSecond: CLLocationSpeed {
-        units.toMetresPerSecond(fixedSpeed)
+        units.toMetresPerSecond(fixedSpeed.clamped(to: 1...400))
     }
 
     var ceilingMetresPerSecond: CLLocationSpeed {
-        units.toMetresPerSecond(speedCeiling)
+        units.toMetresPerSecond(speedCeiling.clamped(to: 10...400))
     }
 
     var updateInterval: TimeInterval {

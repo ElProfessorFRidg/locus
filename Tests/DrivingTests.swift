@@ -337,4 +337,47 @@ final class DriveProfileClampTests: XCTestCase {
             XCTAssertEqual(profile(scale: scale).timeScaleClamped, scale, accuracy: 1e-9, "\(scale)×")
         }
     }
+
+    /// A ceiling of zero is the dangerous one: every point's ceiling becomes 0,
+    /// so the car's maximum speed is 0 everywhere. It never advances, never
+    /// reaches the end, and the drive runs until someone stops it — which reads
+    /// as a hang rather than as a setting.
+    func testACeilingOfZeroCannotStallTheDrive() {
+        var p = DriveProfile()
+        p.units = .kph
+        for stored in [0.0, -50.0, 0.4] {
+            p.speedCeiling = stored
+            XCTAssertGreaterThan(p.ceilingMetresPerSecond, 1, "a stored ceiling of \(stored) must still let the car move")
+        }
+    }
+
+    func testCeilingAndFixedSpeedKeepEveryValueTheirControlsOffer() {
+        var p = DriveProfile()
+        p.units = .kph
+        for stored in [10.0, 50.0, 130.0, 400.0] {
+            p.speedCeiling = stored
+            XCTAssertEqual(
+                p.ceilingMetresPerSecond,
+                SpeedUnit.kph.toMetresPerSecond(stored),
+                accuracy: 1e-9,
+                "\(stored) is inside the stepper's own 10…400 range"
+            )
+        }
+        for stored in [1.0, 30.0, 400.0] {
+            p.fixedSpeed = stored
+            XCTAssertEqual(
+                p.fixedSpeedMetresPerSecond,
+                SpeedUnit.kph.toMetresPerSecond(stored),
+                accuracy: 1e-9,
+                "\(stored) is inside the stepper's own 1…400 range"
+            )
+        }
+    }
+
+    func testAnAbsurdStoredCeilingIsCapped() {
+        var p = DriveProfile()
+        p.units = .kph
+        p.speedCeiling = 99_999
+        XCTAssertEqual(p.ceilingMetresPerSecond, SpeedUnit.kph.toMetresPerSecond(400), accuracy: 1e-9)
+    }
 }

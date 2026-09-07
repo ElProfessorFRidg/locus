@@ -253,10 +253,10 @@ struct DriveSettingsView: View {
                         Image(systemName: "arrow.right")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
-                        Text("\(Int((limit * (1 + profile.speedTolerance)).rounded())) \(profile.units.short)")
+                        Text("\(Int((limit * (1 + profile.speedToleranceClamped)).rounded())) \(profile.units.short)")
                             .font(.subheadline.weight(.semibold).monospacedDigit())
                         Spacer()
-                        if limit * (1 + profile.speedTolerance) > profile.speedCeiling {
+                        if limit * (1 + profile.speedToleranceClamped) > profile.speedCeiling {
                             Label("capped", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption2)
                                 .foregroundStyle(LocusTheme.statusWarn)
