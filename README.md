@@ -190,7 +190,7 @@ CI runs it before the archive, so a failing assertion stops the build rather tha
 | **The driving model** | Fixed-speed plans, stopping at the end, resuming halfway, corrections beating the estimate — and every stored parameter clamped where the engine reads it. |
 | **Choosing a route** | Which route "office" finds, what sits at the top of the list, which alternative gets badged. |
 
-Five bugs that had been shipping were found by writing them, each noted in the commit that fixed it.
+Two bugs that had been shipping fell out of the suite's first run — every bend reading as twice as open as it is, and an inverted wait range collapsing instead of swapping — and several more were caught in new code before it ever shipped. Each is described in the commit that fixed it.
 
 ## Credits & license
 
