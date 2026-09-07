@@ -170,6 +170,28 @@ xcodebuild -project Locus.xcodeproj -scheme Locus -configuration Release \
   -destination 'generic/platform=iOS' DEVELOPMENT_TEAM=YOUR_TEAM_ID build
 ```
 
+### Tests
+
+```bash
+xcodegen generate
+xcodebuild test -project Locus.xcodeproj -scheme LocusTests \
+  -destination 'platform=iOS Simulator,name=iPhone 16'
+```
+
+`LocusTests` is a logic bundle with **no host application**, on purpose. The app links `Vendor/idevice`, an arm64 device-only static library, so anything hosted by it can't build for a simulator at all — and a test bundle that only runs on a paired iPhone is a test bundle nobody runs. This one compiles the pure files directly: no UIKit, no SwiftUI, no FFI, nothing that needs a device to be true. That constraint is why `TravelMode`, `DriveFormat`, `RouteShape`, `SavedRouteOrder` and `RouteComparison` have files of their own.
+
+CI runs it before the archive, so a failing assertion stops the build rather than publishing an IPA nobody has reason to trust. What it covers, and why those parts:
+
+| | |
+| --- | --- |
+| **`CoordinateParser`** | Its failure mode is silent — a false positive swallows a place search and drops a pin in the Gulf of Guinea. Every shape it accepts, and every one it must refuse. |
+| **Persistence** | Synthesised `Codable` throws on one missing key and the loaders answer a throw with an empty list, so "a field was added" and "every route you saved is gone" are one bug apart. |
+| **Geometry** | Pure maths with answers you can check by hand: a 3-4-5 offset measuring 500 m, a 200 m circle measuring 200 m, coordinates that aren't coordinates. |
+| **The driving model** | Fixed-speed plans, stopping at the end, resuming halfway, corrections beating the estimate — and every stored parameter clamped where the engine reads it. |
+| **Choosing a route** | Which route "office" finds, what sits at the top of the list, which alternative gets badged. |
+
+Five bugs that had been shipping were found by writing them, each noted in the commit that fixed it.
+
 ## Credits & license
 
 MIT. `Vendor/idevice` contains the idevice FFI (MIT).
