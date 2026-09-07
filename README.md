@@ -15,8 +15,10 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - **Built-in tunnel** — Locus raises the loopback tunnel itself, no second app to launch
 - Live joystick — walk / run / cycle / drive with light speed variation
 - **Routes built by dragging them** — lettered markers on the map, stops along the way, tap an alternative to take it
-- Walk/Drive routing on real roads & footpaths (MapKit), with Apple's alternatives compared by "+4 min, −1.2 km"
+- Walk/Drive routing on real roads & footpaths (MapKit), alternatives badged **Fastest** / **Shortest** and compared by "+4 min, −1.2 km"
 - Snap a finger-drawn path onto real roads, keeping its shape
+- **Saved routes you can pick from** — each row draws its own shape, says where it runs between, and is filterable by either; swipe to drive, duplicate or rename
+- **What a route involves before you drive it** — stops, waiting time, speed band, and how many bends the grip budget rather than the sign decides
 - A trip summary when you arrive: distance, time, average, fuel — and one tap to drive it again or drive it back
 - **Driving parameters** — respect the limit +10%, acceleration and braking, corner grip, traffic, junction stops, GPS scatter, lane offset, 0.5×–8× playback, loop / back-and-forth
 - Named driving profiles, saved routes, and resume after an interrupted drive
@@ -52,6 +54,10 @@ Keep several of these as named **profiles** — a commute and a walk in the park
 **Speed limits are estimated, not looked up.** MapKit publishes no posted-limit data. Locus derives a limit from the pace Apple expects for the route combined with how the road bends and how often it turns, then snaps the result to values roads are actually signed at (30/50/90/130, or 25/35/55/70 in mph). Treat it as a good reading of the road, not a legal figure.
 
 Because it's an estimate, the route is **coloured by limit on the map** before you drive it, and any stretch it gets wrong can be **corrected by hand** from the route sheet — the drive then uses your number. Routes are saveable, corrections and all, and a drive that gets interrupted can be picked up where it stopped.
+
+Before committing forty minutes to a route, the sheet says what driving it will involve: how many junctions the car will sit at, how long for in total, the band of speeds the plan permits, and how many bends are decided by the grip budget rather than the sign.
+
+**Saved routes are a list you can pick from.** Each row draws the route's own outline — you recognise your commute's shape the way you recognise a signature — next to where it runs between, resolved once when it's saved. Past four routes the list gains a filter (matching the endpoint names as well as the route's name, so "office" finds the one you called "Monday") and an order: recently driven, most driven, or longest. Swipe a row right to drive it, left to rename, duplicate or delete.
 
 A **GPX with timestamps** can be replayed at the pace it was actually recorded at, stops included.
 

@@ -212,7 +212,7 @@ enum RouteBuilder {
         through stops: [CLLocationCoordinate2D],
         mode: TravelMode,
         alternatives: Bool = true,
-        onProgress: (@MainActor (Int, Int) -> Void)? = nil
+        onProgress: (@MainActor @Sendable (Int, Int) -> Void)? = nil
     ) async throws -> [BuiltRoute] {
         guard stops.count >= 2 else {
             throw RouteBuilderError.notEnoughStops
@@ -258,6 +258,23 @@ enum RouteBuilder {
     /// reads as one client working, not a flood.
     private static let concurrentLegs = 3
 
+    /// The quickest way to cover one leg, tagged with where it belongs.
+    ///
+    /// A free function rather than a closure inside the group below, so nothing
+    /// has to capture the group itself.
+    private static func bestLeg(
+        index: Int,
+        from: CLLocationCoordinate2D,
+        to: CLLocationCoordinate2D,
+        mode: TravelMode
+    ) async throws -> (Int, BuiltRoute) {
+        let legs = try await roadRoutes(from: from, to: to, mode: mode, alternatives: false)
+        guard let best = legs.min(by: { $0.expectedTravelTime < $1.expectedTravelTime }) else {
+            throw RouteBuilderError.legFailed(index + 1)
+        }
+        return (index, best)
+    }
+
     /// Routes each pair independently, keeping the results in the order given.
     ///
     /// A sliding window rather than one big group: the window bounds how many
@@ -266,26 +283,19 @@ enum RouteBuilder {
     private static func routeLegs(
         _ pairs: [(CLLocationCoordinate2D, CLLocationCoordinate2D)],
         mode: TravelMode,
-        onProgress: (@MainActor (Int, Int) -> Void)?
+        onProgress: (@MainActor @Sendable (Int, Int) -> Void)?
     ) async throws -> [BuiltRoute] {
         try await withThrowingTaskGroup(of: (Int, BuiltRoute).self) { group in
             var results = [BuiltRoute?](repeating: nil, count: pairs.count)
             var next = 0
             var finished = 0
 
-            func addTask(_ index: Int) {
-                let (from, to) = pairs[index]
-                group.addTask {
-                    let legs = try await roadRoutes(from: from, to: to, mode: mode, alternatives: false)
-                    guard let best = legs.min(by: { $0.expectedTravelTime < $1.expectedTravelTime }) else {
-                        throw RouteBuilderError.legFailed(index + 1)
-                    }
-                    return (index, best)
-                }
-            }
-
             while next < min(concurrentLegs, pairs.count) {
-                addTask(next)
+                let index = next
+                let pair = pairs[index]
+                group.addTask {
+                    try await bestLeg(index: index, from: pair.0, to: pair.1, mode: mode)
+                }
                 next += 1
             }
 
@@ -293,8 +303,13 @@ enum RouteBuilder {
                 results[index] = leg
                 finished += 1
                 await onProgress?(finished, pairs.count)
+
                 if next < pairs.count {
-                    addTask(next)
+                    let queued = next
+                    let pair = pairs[queued]
+                    group.addTask {
+                        try await bestLeg(index: queued, from: pair.0, to: pair.1, mode: mode)
+                    }
                     next += 1
                 }
             }
@@ -322,7 +337,7 @@ enum RouteBuilder {
         path: [CLLocationCoordinate2D],
         mode: TravelMode,
         maximumLegs: Int = 10,
-        onProgress: (@MainActor (Int, Int) -> Void)? = nil
+        onProgress: (@MainActor @Sendable (Int, Int) -> Void)? = nil
     ) async throws -> BuiltRoute {
         let stops = anchors(along: path, maximum: maximumLegs + 1)
         guard stops.count >= 2 else { throw RouteBuilderError.notEnoughStops }

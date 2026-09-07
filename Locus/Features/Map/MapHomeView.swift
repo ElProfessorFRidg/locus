@@ -79,6 +79,10 @@ struct MapHomeView: View {
                     // the precision this needs: it sizes a tap target, not a
                     // measurement.
                     mapSpanMetres = max(50, context.region.span.latitudeDelta * 111_000)
+                    // Rank completions against what you're looking at. Without
+                    // this the completer searches the whole world, so "Gare"
+                    // over Lyon offered stations anywhere but Lyon.
+                    search.region = context.region
                 }
                 .onTapGesture { point in
                     // A tap on the map while the keyboard is up is a tap to put
@@ -543,7 +547,7 @@ struct MapHomeView: View {
                 .textInputAutocapitalization(.words)
                 .focused($searchFocused)
                 .submitLabel(.search)
-                .onSubmit { searchFocused = false }
+                .onSubmit(submitSearch)
                 .onChange(of: searchText) { _, value in
                     // Don't ask MapKit to find a business called
                     // "48.8584, 2.2945" — and clear any results still on
@@ -587,6 +591,21 @@ struct MapHomeView: View {
         .padding(12)
         .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    /// The Search key used to do nothing but put the keyboard away.
+    ///
+    /// The field is labelled Search and every other app in the world takes you
+    /// to the top hit when you press it. Here you typed a place, pressed
+    /// Search, watched the keyboard go, and then had to reach back up to the
+    /// list that was already on screen.
+    private func submitSearch() {
+        searchFocused = false
+        if let match = typedCoordinate {
+            go(to: match)
+        } else if let first = search.results.first {
+            select(completion: first)
+        }
     }
 
     /// What is in the search field, when it is a location rather than the name
@@ -1198,7 +1217,20 @@ final class PlaceSearchCompleter: NSObject, ObservableObject, MKLocalSearchCompl
     var query: String = "" {
         didSet {
             completer.queryFragment = query
+            if query.isEmpty { results = [] }
         }
+    }
+
+    /// Where to look. `MKLocalSearchCompleter` defaults to the whole world, so
+    /// without this "Gare" over Lyon offered stations anywhere but Lyon, and
+    /// every high-street name in the country outranked the one on screen.
+    ///
+    /// Written straight through rather than debounced: the camera reports on
+    /// gesture end, and the completer treats a region change as a re-rank of
+    /// the query it already has, not a new request.
+    var region: MKCoordinateRegion {
+        get { completer.region }
+        set { completer.region = newValue }
     }
 
     override init() {
@@ -1212,7 +1244,11 @@ final class PlaceSearchCompleter: NSObject, ObservableObject, MKLocalSearchCompl
         Task { @MainActor in self.results = items }
     }
 
-    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
-        Task { @MainActor in self.results = [] }
-    }
+    /// Deliberately keeps whatever is on screen.
+    ///
+    /// The completer cancels its in-flight request on every keystroke and
+    /// reports that as a failure, so clearing here made the list flicker out
+    /// from under a finger already reaching for it. An empty query is the one
+    /// thing that genuinely means "no results", and `query` handles that.
+    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {}
 }

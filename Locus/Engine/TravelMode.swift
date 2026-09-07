@@ -7,7 +7,7 @@ import MapKit
 /// Extracted from `SpoofSession` so it can be reasoned about — and tested —
 /// without dragging in the location FFI, UIKit and UserNotifications behind it.
 /// It is four cases and a table of constants; nothing about it needs a device.
-enum TravelMode: String, CaseIterable, Identifiable {
+enum TravelMode: String, CaseIterable, Identifiable, Sendable {
     case walk, run, cycle, drive
 
     var id: String { rawValue }
