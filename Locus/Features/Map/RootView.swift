@@ -425,8 +425,15 @@ struct StatusBarView: View {
         }
     }
 
+    /// Only writes when the answer moved.
+    ///
+    /// This is polled every two seconds for as long as Locus is on screen, and
+    /// assigning `@State` invalidates the view whether or not the value changed
+    /// — so the status bar and the tray under it were being rebuilt every two
+    /// seconds, forever, to draw exactly what was already there.
     private func refresh() {
-        loopbackUp = TunnelController.loopbackReachable
+        let up = TunnelController.loopbackReachable
+        if up != loopbackUp { loopbackUp = up }
     }
 }
 

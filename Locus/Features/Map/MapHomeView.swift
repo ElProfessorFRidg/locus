@@ -79,16 +79,27 @@ struct MapHomeView: View {
                     MapScaleView()
                 }
                 .mapControlVisibility(.automatic)
+                // Continuous in precision mode, which is the whole point of it —
+                // and also the reason everything below is guarded. Each write
+                // here invalidates this view, and this view builds the map's
+                // entire content, one `MapPolyline` per coloured stretch.
                 .onMapCameraChange(frequency: precisionMode ? .continuous : .onEnd) { context in
                     mapCenter = context.region.center
+
                     // A degree of latitude is ~111 km everywhere, which is all
                     // the precision this needs: it sizes a tap target, not a
-                    // measurement.
-                    mapSpanMetres = max(50, context.region.span.latitudeDelta * 111_000)
+                    // measurement. Only read by a tap handler, and unchanged by
+                    // panning — so writing it per frame rebuilt the map for a
+                    // number nothing on screen was showing.
+                    let span = max(50, context.region.span.latitudeDelta * 111_000)
+                    if abs(span - mapSpanMetres) > 1 { mapSpanMetres = span }
+
                     // Rank completions against what you're looking at. Without
                     // this the completer searches the whole world, so "Gare"
-                    // over Lyon offered stations anywhere but Lyon.
-                    search.region = context.region
+                    // over Lyon offered stations anywhere but Lyon. Skipped when
+                    // there is nothing to rank: setting it is a MapKit re-rank,
+                    // and aiming in precision mode would ask for one per frame.
+                    if !search.query.isEmpty { search.region = context.region }
                 }
                 .onTapGesture { point in
                     // A tap on the map while the keyboard is up is a tap to put

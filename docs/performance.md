@@ -157,6 +157,48 @@ GPX compiled thirty thousand regex objects, on the main thread, which is most of
 why importing a long recorded track felt like a hang. The three are compiled once
 now.
 
+## Redraws
+
+Everything above is work done per unit of time. This section is the same idea
+applied to SwiftUI: work done per *redraw*, and redraws asked for that changed
+nothing on screen.
+
+### The status bar rebuilt itself every two seconds, forever
+
+`RootView` polls `TunnelController.loopbackReachable` on a two-second loop for as
+long as Locus is on screen, and assigned the result to `@State`. Assigning
+`@State` invalidates the view whether or not the value changed, so the status
+bar and the tray under it were rebuilt every two seconds to draw exactly what
+was already there. Both it and `SettingsView.refresh` now write only on a
+change.
+
+### Precision mode invalidated the map on every frame of a pan
+
+`onMapCameraChange` runs at `.continuous` frequency in precision mode — which is
+the point of precision mode — and its handler wrote two pieces of `@State` and
+re-ranked the search completer, per frame. `MapHomeView.body` builds the map's
+entire content, one `MapPolyline` per coloured stretch, so each of those writes
+rebuilt all of it while a finger was moving.
+
+`mapSpanMetres` is read by one tap handler and does not change when you pan, so
+it is written only when it moves. The completer's `region` is a MapKit re-rank,
+now skipped when there is no query to re-rank.
+
+### The speed ladder allocated an array per stretch per redraw
+
+`SpeedUnit.speedLadder` returned a fresh `[Double]` on every call, and
+`LocusTheme.speedColor` calls it once per stretch — so a route drawn as three
+hundred coloured polylines allocated three hundred arrays every time the map
+redrew. Two static arrays now.
+
+### The saved list's thumbnails re-projected on every draw
+
+`RouteShapeThumbnail` draws in a `Canvas`, and its closure ran
+`RouteShape.normalised` — a stride-sample, a reduce, two `map`s into separate
+arrays and four `min`/`max` sweeps over them — on every draw pass, for every
+visible row, while the list scrolled. Same projection, same output, in three
+passes and two allocations.
+
 ## Found, not changed
 
 ### A probable leak in the FFI session
@@ -200,6 +242,16 @@ two seconds. About ten small string allocations a second are formatted and
 discarded. Fixing it means either passing an autoclosure or letting the
 controller do the formatting, and the module boundary that keeps formatting on
 the app side is deliberate.
+
+### The map's content is rebuilt whenever the session publishes
+
+`MapHomeView` observes `SpoofSession`, and its body builds the `Map` and all of
+its content. During a drive the session publishes on every fix, so the whole
+overlay — up to a few hundred `MapPolyline`s — is rebuilt and diffed several
+times a second. The fix is to move the map into a view that observes only what
+it draws, which is a real restructuring rather than a change of a few lines. The
+per-element work inside that loop has been cut instead (see the speed ladder
+above); the rebuild itself remains.
 
 ### `libidevice_ffi.a` is 95 MB in the tree
 

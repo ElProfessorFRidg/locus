@@ -24,16 +24,44 @@ enum RouteShape {
         // A few hundred points is plenty for a 44-point square, and a route can
         // hold thousands.
         let step = max(1, coordinates.count / 240)
-        var sampled = stride(from: 0, to: coordinates.count, by: step).map { coordinates[$0] }
-        if let last = coordinates.last { sampled.append(last) }
 
-        let meanLatitude = sampled.reduce(0.0) { $0 + $1.latitude } / Double(sampled.count)
+        // Three passes and two allocations, where this was six allocations and
+        // eight sweeps over four separate arrays. It runs inside a `Canvas`
+        // draw — once per visible row of the saved list, every time that list
+        // redraws or scrolls — so the sweeps were not free.
+        var sampled: [Coordinate2D] = []
+        sampled.reserveCapacity(coordinates.count / step + 2)
+        var latitudeTotal = 0.0
+
+        var index = 0
+        while index < coordinates.count {
+            let point = coordinates[index]
+            sampled.append(point)
+            latitudeTotal += point.latitude
+            index += step
+        }
+        // The real last point, whatever the stride landed on — an out-and-back
+        // route that loses its far end reads as half a route.
+        if let last = coordinates.last {
+            sampled.append(last)
+            latitudeTotal += last.latitude
+        }
+        guard !sampled.isEmpty else { return [] }
+
+        let meanLatitude = latitudeTotal / Double(sampled.count)
         let squeeze = max(0.05, cos(meanLatitude * .pi / 180))
 
-        let xs: [Double] = sampled.map { $0.longitude * squeeze }
-        let ys: [Double] = sampled.map { $0.latitude }
-        guard let minX = xs.min(), let maxX = xs.max(),
-              let minY = ys.min(), let maxY = ys.max() else { return [] }
+        var minX = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude
+        var minY = Double.greatestFiniteMagnitude
+        var maxY = -Double.greatestFiniteMagnitude
+        for point in sampled {
+            let x = point.longitude * squeeze
+            minX = min(minX, x)
+            maxX = max(maxX, x)
+            minY = min(minY, point.latitude)
+            maxY = max(maxY, point.latitude)
+        }
 
         // Degenerate spans are real: an out-and-back route has zero width.
         let spanX = max(maxX - minX, 1e-9)
@@ -47,12 +75,15 @@ enum RouteShape {
         let originX = Double(inset) + (usableWidth - spanX * scale) / 2
         let originY = Double(inset) + (usableHeight - spanY * scale) / 2
 
-        return zip(xs, ys).map { x, y in
-            CGPoint(
-                x: CGFloat(originX + (x - minX) * scale),
+        var points: [CGPoint] = []
+        points.reserveCapacity(sampled.count)
+        for point in sampled {
+            points.append(CGPoint(
+                x: CGFloat(originX + (point.longitude * squeeze - minX) * scale),
                 // Flipped: latitude grows north, screen y grows down.
-                y: CGFloat(originY + (maxY - y) * scale)
-            )
+                y: CGFloat(originY + (maxY - point.latitude) * scale)
+            ))
         }
+        return points
     }
 }

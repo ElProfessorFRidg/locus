@@ -484,12 +484,19 @@ struct SettingsView: View {
     }
 
     private func refresh() {
-        localDevVPNInstalled = LocalDevVPN.isInstalled
-        loopbackUp = TunnelController.loopbackReachable
+        // Assigned only when they moved: writing `@State` invalidates the view
+        // either way, and this settings screen is long enough that rebuilding it
+        // to draw what is already there is worth avoiding.
+        let installed = LocalDevVPN.isInstalled
+        if installed != localDevVPNInstalled { localDevVPNInstalled = installed }
+
+        let up = TunnelController.loopbackReachable
+        if up != loopbackUp { loopbackUp = up }
+
         // This runs on every return to the foreground, and a notification
         // banner pulled down mid-edit counts as one — so it used to overwrite
         // whatever was half-typed with the stored value.
-        if !editingIP { tunnelIP = TunnelConfig.targetIP }
+        if !editingIP, tunnelIP != TunnelConfig.targetIP { tunnelIP = TunnelConfig.targetIP }
     }
 }
 

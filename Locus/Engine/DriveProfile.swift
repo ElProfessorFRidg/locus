@@ -29,12 +29,18 @@ enum SpeedUnit: String, Codable, CaseIterable, Identifiable {
     func fromMetresPerSecond(_ value: CLLocationSpeed) -> Double { value / metresPerSecond }
     func toMetresPerSecond(_ value: Double) -> CLLocationSpeed { value * metresPerSecond }
 
+    private static let kphLadder: [Double] = [20, 30, 50, 70, 80, 90, 110, 130]
+    private static let mphLadder: [Double] = [15, 20, 25, 30, 35, 45, 55, 65, 70]
+
     /// The signposted values a road actually gets in this unit. Estimated limits
     /// are snapped to these so the HUD reads like a real sign instead of "83".
+    ///
+    /// Backed by static arrays rather than built per call: the map colours one
+    /// polyline per stretch and asks for this once per stretch per redraw, so a
+    /// fresh array here was a few hundred allocations for every frame the map
+    /// moved.
     var speedLadder: [Double] {
-        self == .kph
-            ? [20, 30, 50, 70, 80, 90, 110, 130]
-            : [15, 20, 25, 30, 35, 45, 55, 65, 70]
+        self == .kph ? Self.kphLadder : Self.mphLadder
     }
 }
 
