@@ -605,6 +605,15 @@ struct RoutePlannerSheet: View {
                 }
             }
 
+            if let deleted = session.routeStore.lastDeleted {
+                Button {
+                    session.routeStore.undoDelete()
+                } label: {
+                    Label("Undo deleting “\(deleted.route.name)”", systemImage: "arrow.uturn.backward")
+                }
+                .tint(LocusTheme.accentSecondary)
+            }
+
             // Only once the list is long enough that scanning it stops working.
             if session.routeStore.routes.count > 4 {
                 Picker("Order", selection: $savedOrder) {
@@ -735,7 +744,12 @@ struct RoutePlannerSheet: View {
             }
             .tint(LocusTheme.statusGood)
         }
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        // No full swipe on this edge on purpose: Delete is the first button, and
+        // a route carries its limit corrections, its recorded pace and its
+        // endpoint names — too much to lose to a swipe that went further than
+        // the thumb meant it to. Deleting takes a deliberate tap, and there's
+        // an undo above the list either way.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 session.routeStore.delete(saved.id)
             } label: {

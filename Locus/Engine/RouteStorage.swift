@@ -69,6 +69,18 @@ extension Array where Element == SavedRoute {
         let needle = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return needle.isEmpty ? self : self.filter { $0.matches(needle) }
     }
+
+    /// Puts a route back where it was, or as near as the list still allows.
+    ///
+    /// The index came from before the deletion and the list can have moved on
+    /// since — something saved, something else deleted — so it is clamped
+    /// rather than trusted. Restoring to the wrong place is a much smaller
+    /// problem than trapping on an index that no longer exists.
+    func reinserting(_ route: SavedRoute, at index: Int) -> [SavedRoute] {
+        var copy = self
+        copy.insert(route, at: Swift.min(Swift.max(0, index), copy.count))
+        return copy
+    }
 }
 
 /// A hand-corrected speed limit over a stretch of a route.
@@ -233,10 +245,27 @@ struct RouteResumeState: Codable, Equatable, Sendable {
 /// A route is a few thousand coordinates; a handful of them in `UserDefaults`
 /// would put hundreds of kilobytes into a plist that is read in full on every
 /// launch. Application Support is the right place for this.
+/// A route that was deleted, and where in the list it sat.
+struct DeletedRoute: Identifiable, Equatable {
+    let route: SavedRoute
+    let index: Int
+    var id: UUID { route.id }
+}
+
 @MainActor
 final class RouteStore: ObservableObject {
     @Published private(set) var routes: [SavedRoute] = []
     @Published private(set) var resumable: RouteResumeState?
+
+    /// The route deleted most recently, offered back until you do something
+    /// else with the list.
+    ///
+    /// Deleting a saved route destroys its limit corrections, its recorded
+    /// pace and its endpoint names — work that took a drive to produce and one
+    /// swipe to lose. Kept in memory only: an undo still available tomorrow
+    /// isn't an undo, it's a bin, and a bin is a bigger idea than this list
+    /// needs.
+    @Published private(set) var lastDeleted: DeletedRoute?
 
     private let directory: URL
     private let routesURL: URL
@@ -287,6 +316,7 @@ final class RouteStore: ObservableObject {
         saved.startName = startName
         saved.endName = endName
         routes.insert(saved, at: 0)
+        lastDeleted = nil
         persistRoutes()
 
         // Named in the background when the caller didn't already know. One
@@ -338,6 +368,7 @@ final class RouteStore: ObservableObject {
         copy.lastDrivenAt = nil
         copy.driveCount = 0
         routes.insert(copy, at: 0)
+        lastDeleted = nil
         persistRoutes()
         return copy
     }
@@ -372,8 +403,20 @@ final class RouteStore: ObservableObject {
     }
 
     func delete(_ id: UUID) {
-        routes.removeAll { $0.id == id }
+        guard let index = routes.firstIndex(where: { $0.id == id }) else { return }
+        lastDeleted = DeletedRoute(route: routes[index], index: index)
+        routes.remove(at: index)
         persistRoutes()
+    }
+
+    /// Puts the last deleted route back.
+    @discardableResult
+    func undoDelete() -> SavedRoute? {
+        guard let deleted = lastDeleted else { return nil }
+        lastDeleted = nil
+        routes = routes.reinserting(deleted.route, at: deleted.index)
+        persistRoutes()
+        return deleted.route
     }
 
     /// Updates the stored overrides for a route that's already saved.

@@ -71,6 +71,35 @@ final class RouteSelectionTests: XCTestCase {
         XCTAssertEqual([route("Airport run")].matching("airport").count, 1)
     }
 
+    // MARK: Undoing a delete
+
+    /// Deleting a route destroys its limit corrections, its recorded pace and
+    /// its endpoint names. Putting it back at the end of the list would be a
+    /// different route as far as a list you scan is concerned.
+    func testUndoRestoresARouteWhereItWas() {
+        let routes = [route("A"), route("C"), route("D")]
+        let restored = routes.reinserting(route("B"), at: 1)
+        XCTAssertEqual(restored.map(\.name), ["A", "B", "C", "D"])
+    }
+
+    func testUndoAtEitherEndOfTheList() {
+        let routes = [route("B"), route("C")]
+        XCTAssertEqual(routes.reinserting(route("A"), at: 0).map(\.name), ["A", "B", "C"])
+        XCTAssertEqual(routes.reinserting(route("D"), at: 2).map(\.name), ["B", "C", "D"])
+    }
+
+    /// The index came from before the deletion, and the list can have moved on
+    /// since — something else saved, something else deleted.
+    func testUndoClampsAnIndexTheListHasOutgrown() {
+        let routes = [route("A")]
+        XCTAssertEqual(routes.reinserting(route("X"), at: 99).map(\.name), ["A", "X"])
+        XCTAssertEqual(routes.reinserting(route("X"), at: -4).map(\.name), ["X", "A"])
+    }
+
+    func testUndoIntoAnEmptyListWorks() {
+        XCTAssertEqual([SavedRoute]().reinserting(route("Only"), at: 3).map(\.name), ["Only"])
+    }
+
     // MARK: Unique names
 
     func testAFreeNameIsLeftAlone() {
