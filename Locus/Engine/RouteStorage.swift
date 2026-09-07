@@ -45,22 +45,38 @@ enum SavedRouteOrder: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Every comparison here is a total order, on purpose.
+    ///
+    /// `sorted` is not stable, so any ordering that leaves ties to it reshuffles
+    /// the list on every redraw — the rows moving under a finger already
+    /// reaching for one. Ties are reachable in all three: never-driven routes
+    /// all have a count of zero, and duplicating a route copies its distance
+    /// exactly.
     func sort(_ routes: [SavedRoute]) -> [SavedRoute] {
         switch self {
         case .recent:
-            return routes.sorted { $0.lastUsedAt > $1.lastUsedAt }
+            return routes.sorted(by: Self.byRecency)
         case .mostDriven:
-            // Ties broken by recency rather than left to `sorted`, which is not
-            // stable — otherwise a list of never-driven routes reshuffles itself
-            // every time the sheet redraws.
             return routes.sorted {
                 $0.driveCount == $1.driveCount
-                    ? $0.lastUsedAt > $1.lastUsedAt
+                    ? Self.byRecency($0, $1)
                     : $0.driveCount > $1.driveCount
             }
         case .longest:
-            return routes.sorted { $0.distance > $1.distance }
+            return routes.sorted {
+                $0.distance == $1.distance
+                    ? Self.byRecency($0, $1)
+                    : $0.distance > $1.distance
+            }
         }
+    }
+
+    /// Most recently used first, and id as the last resort — two routes made in
+    /// the same instant still have to land in the same order every time.
+    private static func byRecency(_ a: SavedRoute, _ b: SavedRoute) -> Bool {
+        a.lastUsedAt == b.lastUsedAt
+            ? a.id.uuidString > b.id.uuidString
+            : a.lastUsedAt > b.lastUsedAt
     }
 }
 

@@ -177,6 +177,30 @@ final class RouteSelectionTests: XCTestCase {
         XCTAssertEqual(SavedRouteOrder.longest.sort(routes).map(\.name), ["Long", "Mid", "Short"])
     }
 
+    /// Duplicating a route copies its distance exactly, so identical distances
+    /// are reachable — and `sorted` is not stable.
+    func testLongestBreaksDistanceTiesDeterministically() {
+        let routes = [
+            route("Original", distance: 12_000, created: 100),
+            route("Original copy", distance: 12_000, created: 300),
+            route("Elsewhere", distance: 40_000, created: 200),
+        ]
+        let once = SavedRouteOrder.longest.sort(routes).map(\.name)
+        XCTAssertEqual(once, ["Elsewhere", "Original copy", "Original"])
+        XCTAssertEqual(SavedRouteOrder.longest.sort(routes.reversed()).map(\.name), once)
+    }
+
+    /// Two routes made in the same instant still have to land in the same order
+    /// every redraw, which needs a tie-break below the timestamp.
+    func testOrderingIsTotalEvenWithIdenticalTimestamps() {
+        let routes = (0..<6).map { route("R\($0)", distance: 1_000, created: 0) }
+        for order in SavedRouteOrder.allCases {
+            let once = order.sort(routes).map(\.name)
+            XCTAssertEqual(order.sort(routes.reversed()).map(\.name), once, "\(order)")
+            XCTAssertEqual(Set(once).count, routes.count, "\(order) must not drop a route")
+        }
+    }
+
     func testOrderingAnEmptyListIsHarmless() {
         for order in SavedRouteOrder.allCases {
             XCTAssertTrue(order.sort([]).isEmpty, "\(order)")
