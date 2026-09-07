@@ -46,8 +46,15 @@ struct DriveHUDView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .center, spacing: 16) {
+        // Three rows rather than two, because the previous single row asked the
+        // speed, the sign, the playback control, pause and stop to share one
+        // line: on a phone that left the speed about sixty points to draw three
+        // digits at forty, so "135" wrapped into a column reading 1 / 3 / 5, and
+        // "257.1 km left" was squeezed to "257.1 k…". The two things that must
+        // never shrink — the speed and the two big buttons — get the top row to
+        // themselves; everything flexible moved down.
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 12) {
                 speedBlock
 
                 if let limitValue {
@@ -55,15 +62,17 @@ struct DriveHUDView: View {
                         .transition(.scale(scale: 0.7).combined(with: .opacity))
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: 4)
 
-                controls
+                transportControls
             }
+
+            secondaryRow
 
             progress
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
         .locusGlass(.regular, in: RoundedRectangle(cornerRadius: LocusMetrics.panelRadius, style: .continuous))
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: limitValue)
         .animation(.easeOut(duration: 0.2), value: telemetry.isOverLimit)
@@ -73,23 +82,45 @@ struct DriveHUDView: View {
 
     // MARK: - Pieces
 
+    /// The number, and nothing that can push it out of shape.
+    ///
+    /// `fixedSize` is the load-bearing part: without it the digits are treated as
+    /// wrappable text, and a row that runs out of width breaks them one per line
+    /// rather than letting anything else give.
     private var speedBlock: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(speedValue)")
-                    .font(.system(size: 40, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText(value: Double(speedValue)))
-                    .foregroundStyle(speedColor)
-                Text(unit.short)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text("\(speedValue)")
+                .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .contentTransition(.numericText(value: Double(speedValue)))
+                .foregroundStyle(speedColor)
+            Text(unit.short)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
+        .layoutPriority(1)
+    }
 
+    /// What the drive is doing, and the one dial worth having mid-drive.
+    ///
+    /// Full width rather than stacked under the speed, so the controls beside it
+    /// can no longer squeeze it into an ellipsis.
+    private var secondaryRow: some View {
+        HStack(spacing: 10) {
             Text(subtitle)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
+
+            Spacer(minLength: 4)
+
+            if onChangeTimeScale != nil {
+                timeScaleControl
+            }
         }
     }
 
@@ -104,16 +135,14 @@ struct DriveHUDView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var controls: some View {
+    /// Pause and stop only. The playback dial moved to `secondaryRow`, where it
+    /// has room that isn't taken from the speed.
+    private var transportControls: some View {
         HStack(spacing: 8) {
-            if onChangeTimeScale != nil {
-                timeScaleControl
-            }
-
             Button(action: onTogglePause) {
                 Image(systemName: isPaused ? "play.fill" : "pause.fill")
                     .font(.body.weight(.semibold))
-                    .frame(width: 40, height: 40)
+                    .frame(width: 38, height: 38)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -124,7 +153,7 @@ struct DriveHUDView: View {
             Button(action: onStop) {
                 Image(systemName: "stop.fill")
                     .font(.body.weight(.semibold))
-                    .frame(width: 40, height: 40)
+                    .frame(width: 38, height: 38)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -147,13 +176,13 @@ struct DriveHUDView: View {
                 .font(.caption2.weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(profile.timeScale == 1 ? .secondary : LocusTheme.accentSecondary)
-                .frame(minWidth: 30)
+                .frame(minWidth: 28)
                 .contentTransition(.numericText(value: profile.timeScale))
 
             scaleStep("plus", label: "Faster", delta: 1)
         }
         .padding(.horizontal, 4)
-        .frame(height: 40)
+        .frame(height: 30)
         .locusGlass(.interactive, in: Capsule())
         .animation(.snappy, value: profile.timeScale)
     }
@@ -170,7 +199,7 @@ struct DriveHUDView: View {
         } label: {
             Image(systemName: systemName)
                 .font(.caption.weight(.bold))
-                .frame(width: 28, height: 34)
+                .frame(width: 26, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

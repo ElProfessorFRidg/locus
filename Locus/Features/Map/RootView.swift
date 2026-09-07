@@ -524,8 +524,12 @@ struct BottomControlsView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "dot.circle.and.hand.point.up.left.fill")
-                Text(session.joystickActive ? "On" : "Joy")
+                // "Joy" was an abbreviation nothing explained — it reads as a
+                // word, not as the first half of one. There is room for the
+                // whole thing, and it shrinks a little before it would clip.
+                Text(session.joystickActive ? "Joystick on" : "Joystick")
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(session.joystickActive ? .black : .primary)

@@ -47,6 +47,10 @@ struct MapHomeView: View {
     /// Coalesces preview rebuilds — see `refreshPreview`.
     @State private var previewTask: Task<Void, Never>?
 
+    /// How the camera is framed, so following a drive can keep it — see
+    /// `followDrive(to:)`.
+    @State private var cameraPose = CameraPose.followingDefault
+
     @Namespace private var chromeGlass
 
     private var mapStyle: MapStyle {
@@ -93,6 +97,19 @@ struct MapHomeView: View {
                     // number nothing on screen was showing.
                     let span = max(50, context.region.span.latitudeDelta * 111_000)
                     if abs(span - mapSpanMetres) > 1 { mapSpanMetres = span }
+
+                    // Zoom, rotation and tilt, remembered so that following a
+                    // drive can put the car back in the middle without also
+                    // putting the framing back to whatever it decided.
+                    // `MapCamera`'s own numbers, not a region: a region round
+                    // trips through MapKit's aspect fitting and comes back a
+                    // different size, which compounds every time it is fed back.
+                    let pose = CameraPose(
+                        distance: context.camera.distance,
+                        heading: context.camera.heading,
+                        pitch: context.camera.pitch
+                    )
+                    if !pose.isSameFraming(as: cameraPose) { cameraPose = pose }
 
                     // Rank completions against what you're looking at. Without
                     // this the completer searches the whole world, so "Gare"
@@ -145,11 +162,7 @@ struct MapHomeView: View {
         .onChange(of: session.travelMode) { _, _ in refreshPreview() }
         .onChange(of: session.telemetry?.distanceTravelled) { _, _ in
             guard followsDrive, let simulated = session.simulated, session.isRouting else { return }
-            position = .region(MKCoordinateRegion(
-                center: simulated,
-                latitudinalMeters: 500,
-                longitudinalMeters: 500
-            ))
+            followDrive(to: simulated)
         }
         .onReceive(NotificationCenter.default.publisher(for: .locusImportGPX)) { note in
             guard let url = note.object as? URL else { return }
@@ -757,24 +770,22 @@ struct MapHomeView: View {
     /// While a route plays the camera tracks the car. This is the way out of
     /// that, so the map can be panned somewhere else mid-drive without the next
     /// fix yanking it back.
+    ///
+    /// Icon only, like every other chip in this row. It used to carry the word
+    /// "Following", and it was the only labelled control up there — so when the
+    /// five chips, this and the locate button did not fit across a phone, this
+    /// was the one SwiftUI could shrink, and it did: the label was squeezed to
+    /// nothing and the chip read as an unexplained icon anyway.
     private var followChip: some View {
-        Button {
+        GlassIconButton(
+            systemName: followsDrive ? "location.viewfinder" : "location.slash",
+            isOn: followsDrive,
+            accessibilityLabel: followsDrive
+                ? "Following the drive. Tap to free the map."
+                : "Map is free. Tap to follow the drive."
+        ) {
             withAnimation(.snappy) { followsDrive.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: followsDrive ? "location.viewfinder" : "location.slash")
-                Text(followsDrive ? "Following" : "Free")
-                    .lineLimit(1)
-            }
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(followsDrive ? LocusTheme.accent : .secondary)
-        .locusGlass(.clear, in: Capsule())
-        .accessibilityLabel(followsDrive ? "Stop following the drive" : "Follow the drive")
     }
 
     /// A GPX with timestamps is a recording of something someone actually did.
@@ -1088,6 +1099,22 @@ struct MapHomeView: View {
     /// a forty-kilometre route was being replanned sixty times a second while a
     /// finger moved, for one picture at the end of it. Coalescing collapses that
     /// to a single rebuild without changing what finally gets drawn.
+    /// Moves the camera to where the car is, and changes nothing else about it.
+    ///
+    /// It used to re-frame with a fixed 500 m region on every fix — four times a
+    /// second — which meant the map could not be zoomed at all while following a
+    /// drive: a pinch was undone a quarter of a second later, and any rotation or
+    /// tilt with it. Only the centre moves now; the zoom is whatever you last set
+    /// it to.
+    private func followDrive(to coordinate: CLLocationCoordinate2D) {
+        position = .camera(MapCamera(
+            centerCoordinate: coordinate,
+            distance: cameraPose.distance,
+            heading: cameraPose.heading,
+            pitch: cameraPose.pitch
+        ))
+    }
+
     private func refreshPreview() {
         previewTask?.cancel()
         previewTask = Task { @MainActor in
@@ -1104,6 +1131,10 @@ struct MapHomeView: View {
         }
         showRouteSheet = false
         followsDrive = true
+        // Pressing Drive means "show me the car", whatever the map was framing a
+        // moment ago — which, for a 259 km route, is the whole of it. From here
+        // the zoom is yours again.
+        cameraPose = .followingDefault
         session.driveRoute(workspace, pairing: pairing)
     }
 
@@ -1251,6 +1282,34 @@ struct SpoofMarker: View {
 
 private extension UIWindowScene {
     var keyWindow: UIWindow? { windows.first { $0.isKeyWindow } }
+}
+
+/// How the map is framed, apart from where it is pointed.
+///
+/// Kept so following a drive can move the centre and leave everything else
+/// alone. `MapCamera`'s own values rather than a region's span: a region set
+/// programmatically comes back from MapKit resized to the view's aspect, so
+/// reading one back and setting it again drifts a little further out every time.
+struct CameraPose: Equatable {
+    var distance: CLLocationDistance
+    var heading: CLLocationDirection
+    var pitch: Double
+
+    /// What pressing Drive frames the car at, before you change it.
+    static let followingDefault = CameraPose(distance: 1_200, heading: 0, pitch: 0)
+
+    /// Whether two poses are the same framing to the eye.
+    ///
+    /// Following a drive sets the camera and MapKit reports it straight back,
+    /// sometimes a hair different. Comparing exactly would take that hair as a
+    /// change worth storing — a view invalidation per fix, four times a second,
+    /// for a map that is showing the same thing. A pinch moves the distance by
+    /// far more than two per cent.
+    func isSameFraming(as other: CameraPose) -> Bool {
+        abs(distance - other.distance) < Swift.max(1, other.distance * 0.02)
+            && abs(heading - other.heading) < 0.5
+            && abs(pitch - other.pitch) < 0.5
+    }
 }
 
 @MainActor
