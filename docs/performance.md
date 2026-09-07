@@ -157,6 +157,22 @@ GPX compiled thirty thousand regex objects, on the main thread, which is most of
 why importing a long recorded track felt like a hang. The three are compiled once
 now.
 
+### The road-class lookup was linear, per point
+
+Added with the road-number estimator, and caught on the way past. `estimateLimits`
+runs once per resampled point — several thousand of them on a long route — and
+each iteration called `roads.roadClass(at:)`, which scans the whole segment list
+with `first(where:)`. That is O(points × segments) for an answer that is
+O(points + segments).
+
+Worse, the lookup sat on the left of `if let band = …, usesContinentalNumbers`,
+and Swift binds before it tests the condition — so in an mph country the scan ran
+for every point and the result was thrown away.
+
+The segments are sorted once and walked with a cursor, since `cumulative` only
+increases; where the numbering isn't trusted the list is empty and the lookup
+doesn't happen at all.
+
 ## Redraws
 
 Everything above is work done per unit of time. This section is the same idea

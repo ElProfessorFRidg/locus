@@ -413,6 +413,17 @@ enum RouteSimulator {
         // heuristic that was there before.
         let usesContinentalNumbers = units == .kph
 
+        // Sorted once and walked with a cursor rather than searched per point.
+        // `roadClass(at:)` scans the whole list, and this loop runs once per
+        // resampled point — several thousand of them on a long route — so what
+        // is O(points + segments) was being paid as O(points × segments). Empty
+        // where the numbering isn't trusted, which also skips the lookup
+        // entirely instead of doing it and throwing the answer away.
+        let orderedRoads = usesContinentalNumbers
+            ? roads.sorted { $0.startDistance < $1.startDistance }
+            : []
+        var roadCursor = 0
+
         var raw: [CLLocationSpeed] = []
         raw.reserveCapacity(coordinates.count)
 
@@ -441,7 +452,18 @@ enum RouteSimulator {
             // 0 = tight and junction-dense, 1 = open and straight.
             let shape = (0.6 * radiusScore + 0.4 * densityScore).clamped(to: 0...1)
 
-            if let band = roads.roadClass(at: cumulative[index])?.bandKph, usesContinentalNumbers {
+            // `cumulative` only increases, so the segment covering this point
+            // is at or after the one that covered the last.
+            let here = cumulative[index]
+            while roadCursor < orderedRoads.count, orderedRoads[roadCursor].endDistance <= here {
+                roadCursor += 1
+            }
+            let covering: RoadSegment? = roadCursor < orderedRoads.count
+                && orderedRoads[roadCursor].contains(here)
+                ? orderedRoads[roadCursor]
+                : nil
+
+            if let band = covering?.roadClass.bandKph {
                 // The road number said what kind of road this is, so the shape
                 // only has to pick within that road's own band. This is what
                 // stops an autoroute being averaged down to 110 by the town at
