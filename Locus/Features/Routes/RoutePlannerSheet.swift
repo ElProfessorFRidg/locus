@@ -263,14 +263,19 @@ struct RoutePlannerSheet: View {
     // MARK: - Alternatives
 
     private var routesSection: some View {
-        Section("Which way") {
+        // Worked out once for the section, not once per row: `badges(for:)`
+        // walks the whole set to answer, and asking it three times to label
+        // three rows is three times the work for the same answer.
+        let badges = RouteComparison.badges(for: workspace.routes)
+
+        return Section("Which way") {
             ForEach(workspace.routes) { route in
-                alternativeRow(route)
+                alternativeRow(route, badges: badges[route.id] ?? [])
             }
         }
     }
 
-    private func alternativeRow(_ route: BuiltRoute) -> some View {
+    private func alternativeRow(_ route: BuiltRoute, badges: [RouteBadge]) -> some View {
         let isSelected = workspace.selectedRoute?.id == route.id
 
         return Button {
@@ -285,7 +290,7 @@ struct RoutePlannerSheet: View {
                         Text(route.name)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        ForEach(routeBadges[route.id] ?? []) { badge in
+                        ForEach(badges) { badge in
                             Text(badge.title)
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 6)
@@ -305,13 +310,6 @@ struct RoutePlannerSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    /// Computed once per redraw rather than per row: `badges(for:)` walks the
-    /// whole set, and asking it three times to label three rows is three times
-    /// the work for the same answer.
-    private var routeBadges: [UUID: [RouteBadge]] {
-        RouteComparison.badges(for: workspace.routes)
     }
 
     /// Distance and time, plus how this one differs from the quickest.
