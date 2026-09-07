@@ -71,6 +71,38 @@ final class RouteSelectionTests: XCTestCase {
         XCTAssertEqual([route("Airport run")].matching("airport").count, 1)
     }
 
+    // MARK: Unique names
+
+    func testAFreeNameIsLeftAlone() {
+        let taken = [route("Commute"), route("Weekend")]
+        XCTAssertEqual(RouteStore.uniqueName("Commute copy", among: taken), "Commute copy")
+    }
+
+    /// Duplicating twice used to give two rows both called "Commute copy", in
+    /// the one list whose whole job is telling routes apart.
+    func testATakenNameGetsANumber() {
+        var taken = [route("Commute"), route("Commute copy")]
+        XCTAssertEqual(RouteStore.uniqueName("Commute copy", among: taken), "Commute copy 2")
+
+        taken.append(route("Commute copy 2"))
+        XCTAssertEqual(RouteStore.uniqueName("Commute copy", among: taken), "Commute copy 3")
+    }
+
+    func testGapsInTheNumberingAreReused() {
+        let taken = [route("Trip copy"), route("Trip copy 3")]
+        XCTAssertEqual(RouteStore.uniqueName("Trip copy", among: taken), "Trip copy 2")
+    }
+
+    func testUniqueNameTerminatesOnAFullyTakenRun() {
+        // Every candidate up to the bound is taken, which the search has to
+        // survive rather than run off the end of.
+        var taken = [route("X")]
+        for suffix in 2...6 { taken.append(route("X \(suffix)")) }
+        let result = RouteStore.uniqueName("X", among: taken)
+        XCTAssertFalse(result.isEmpty)
+        XCTAssertFalse(taken.map(\.name).contains(result), "the search must find a free name, not give up on one")
+    }
+
     // MARK: Ordering
 
     /// Driven beats saved. A commute kept in January and driven this morning

@@ -3,7 +3,7 @@ import Foundation
 
 /// A latitude/longitude pair that survives being written to disk.
 /// `CLLocationCoordinate2D` is a C struct with no `Codable` conformance.
-struct Coordinate2D: Codable, Equatable, Hashable {
+struct Coordinate2D: Codable, Equatable, Hashable, Sendable {
     var latitude: Double
     var longitude: Double
 
@@ -78,7 +78,7 @@ extension Array where Element == SavedRoute {
 /// wrong about the thing the whole drive is keyed to is worth being able to fix.
 /// Ranges are distances along the route rather than coordinates, which keeps
 /// them stable when the plan is rebuilt at a different sampling.
-struct LimitOverride: Codable, Equatable, Identifiable, Hashable {
+struct LimitOverride: Codable, Equatable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var startDistance: CLLocationDistance
     var endDistance: CLLocationDistance
@@ -94,7 +94,7 @@ struct LimitOverride: Codable, Equatable, Identifiable, Hashable {
 ///
 /// Places could be saved and routes couldn't, which made a daily commute
 /// something you rebuilt every morning.
-struct SavedRoute: Codable, Identifiable, Equatable {
+struct SavedRoute: Codable, Identifiable, Equatable, Sendable {
     var id = UUID()
     var name: String
     var coordinates: [Coordinate2D]
@@ -193,7 +193,7 @@ struct SavedRoute: Codable, Identifiable, Equatable {
 }
 
 /// Where a drive got to, so closing the app doesn't mean starting over.
-struct RouteResumeState: Codable, Equatable {
+struct RouteResumeState: Codable, Equatable, Sendable {
     var routeName: String
     var coordinates: [Coordinate2D]
     var expectedTravelTime: TimeInterval
@@ -329,13 +329,33 @@ final class RouteStore: ObservableObject {
         guard let original = routes.first(where: { $0.id == id }) else { return nil }
         var copy = original
         copy.id = UUID()
-        copy.name = "\(original.name) copy"
+        copy.name = Self.uniqueName("\(original.name) copy", among: routes)
         copy.createdAt = Date()
         copy.lastDrivenAt = nil
         copy.driveCount = 0
         routes.insert(copy, at: 0)
         persistRoutes()
         return copy
+    }
+
+    /// `name`, or `name 2`, `name 3`… until nothing else is called that.
+    ///
+    /// Duplicating twice used to give two rows both called "Commute copy", in
+    /// the one list whose entire job is telling routes apart.
+    ///
+    /// `nonisolated` because it touches nothing on the store — the class is
+    /// `@MainActor`, which would otherwise make a pure function unreachable
+    /// from anywhere that isn't.
+    nonisolated static func uniqueName(_ name: String, among routes: [SavedRoute]) -> String {
+        let taken = Set(routes.map(\.name))
+        guard taken.contains(name) else { return name }
+        // Bounded by the number of routes plus one: with n names taken, one of
+        // the first n + 1 candidates is always free.
+        for suffix in 2...(routes.count + 2) {
+            let candidate = "\(name) \(suffix)"
+            if !taken.contains(candidate) { return candidate }
+        }
+        return name
     }
 
     func rename(_ id: UUID, to name: String) {
@@ -359,32 +379,55 @@ final class RouteStore: ObservableObject {
 
     // MARK: Resume
 
-    /// Called as a route plays. Cheap enough at the rate it's called (every few
-    /// seconds, not every fix) and the only thing that makes resume possible
-    /// after a crash rather than only after a clean exit.
+    /// Called as a route plays, so an interrupted drive can be picked up rather
+    /// than only after a clean exit.
     func recordProgress(_ state: RouteResumeState) {
         resumable = state
-        Self.encode(state, to: resumeURL)
+        Self.write(state, to: resumeURL)
     }
 
     func clearResume() {
         resumable = nil
-        try? FileManager.default.removeItem(at: resumeURL)
+        // Through the same queue as the writes: deleting the file directly
+        // could land before a write already in flight, which would put it
+        // straight back.
+        let url = resumeURL
+        Self.diskQueue.async { try? FileManager.default.removeItem(at: url) }
     }
 
     // MARK: Files
 
     private func persistRoutes() {
-        Self.encode(routes, to: routesURL)
+        Self.write(routes, to: routesURL)
     }
 
+    /// Every write goes here, and none of them happen on the main thread.
+    ///
+    /// `recordProgress` runs every few seconds for the whole length of a drive,
+    /// and the resume state carries the route's entire coordinate list — a
+    /// 40 km route resampled for driving is several thousand points. Encoding
+    /// that to JSON and writing it while the map, the HUD and the Live Activity
+    /// are all animating is a stutter you can feel, and it was being done on the
+    /// main thread. `persistRoutes` had the same problem on a colder path,
+    /// until "most driven" put it on the one where you press Drive.
+    ///
+    /// Serial, so writes land in the order they were made, and atomic, so being
+    /// killed mid-write leaves the previous file intact rather than half a one.
+    private static let diskQueue = DispatchQueue(
+        label: "com.chrismack.locus.routestore", qos: .utility
+    )
+
+    private static func write<T: Encodable & Sendable>(_ value: T, to url: URL) {
+        diskQueue.async {
+            guard let data = try? JSONEncoder().encode(value) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Reads stay synchronous: both happen in `init`, and the first render has
+    /// to have the answer.
     private static func decode<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
-    }
-
-    private static func encode<T: Encodable>(_ value: T, to url: URL) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
-        try? data.write(to: url, options: .atomic)
     }
 }
