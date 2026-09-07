@@ -487,6 +487,11 @@ struct RoutePlannerSheet: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+        // The number and its caption are one fact. Left apart, VoiceOver reads
+        // "3", moves on, and eventually says "stops" — three times over, in a
+        // row of three of these.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(value) \(caption)")
     }
 
     /// How long the playback will actually take, which is not Apple's estimate
@@ -727,11 +732,16 @@ struct RoutePlannerSheet: View {
                 if isLoaded {
                     Image(systemName: "checkmark")
                         .foregroundStyle(LocusTheme.accent)
+                        // "Checkmark" on its own doesn't say what is checked;
+                        // the selected trait below does.
+                        .accessibilityHidden(true)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(spokenLabel(saved))
+        .accessibilityAddTraits(isLoaded ? [.isSelected] : [])
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             // The commonest thing to want from this list is to drive the thing,
             // and that used to be load it, close the sheet, find Drive.
@@ -778,6 +788,23 @@ struct RoutePlannerSheet: View {
 
     private var visibleSavedRoutes: [SavedRoute] {
         savedOrder.sort(session.routeStore.routes.matching(savedFilter))
+    }
+
+    /// The row as a sentence.
+    ///
+    /// `journey` is written for the eye — "Home → Office" — and VoiceOver reads
+    /// that arrow as a glyph or not at all. The shape thumbnail is hidden from
+    /// it entirely, so this is the whole row for anyone listening.
+    private func spokenLabel(_ saved: SavedRoute) -> String {
+        var parts = [saved.name]
+        switch (saved.startName, saved.endName) {
+        case let (start?, end?): parts.append("from \(start) to \(end)")
+        case let (start?, nil): parts.append("from \(start)")
+        case let (nil, end?): parts.append("to \(end)")
+        default: break
+        }
+        parts.append(savedSubtitle(saved))
+        return parts.joined(separator: ", ")
     }
 
     private func savedSubtitle(_ saved: SavedRoute) -> String {
