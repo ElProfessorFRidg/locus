@@ -208,17 +208,23 @@ jobs:
             gh release delete "$TAG" --yes --cleanup-tag --repo "$GITHUB_REPOSITORY"
           fi
 
+          # --target pins the new tag to the commit that was actually built.
+          # Without it `gh release create` creates the tag on the default
+          # branch, so the release's own "source code" links and commitish
+          # pointed at main while its .ipa came from this branch.
           if [[ "$ROLLING" == "true" ]]; then
             gh release create "$TAG" "$FILE" \
               --title "$TITLE" \
               --notes-file release-notes.md \
               --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
               --prerelease
           else
             gh release create "$TAG" "$FILE" \
               --title "$TITLE" \
               --notes-file release-notes.md \
-              --repo "$GITHUB_REPOSITORY"
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA"
           fi
 
       # The point of a stable tag is a link you can bookmark. Print it where the
