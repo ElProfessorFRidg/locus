@@ -276,6 +276,13 @@ struct StatusBarView: View {
         .contentShape(RoundedRectangle(cornerRadius: LocusMetrics.barRadius, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityHint(statusHint)
+        // The status bar is where the current coordinates already are, so it's
+        // where you reach for them. Long press to copy, link or share.
+        .contextMenu {
+            if let coordinate = session.simulated ?? session.pin {
+                LocationActionsMenu(coordinate: coordinate, name: session.simulatedAddress)
+            }
+        }
     }
 
     private var statusHint: String {

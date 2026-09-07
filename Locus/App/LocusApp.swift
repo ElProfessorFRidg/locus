@@ -47,14 +47,40 @@ struct LocusApp: App {
         let ext = url.pathExtension.lowercased()
         if ["plist", "mobiledevicepairing", "mobiledevicepair"].contains(ext) {
             try? pairing.importPairing(from: url)
-        } else if ext == "gpx" {
+            return
+        }
+        if ext == "gpx" {
             NotificationCenter.default.post(name: .locusImportGPX, object: url)
+            return
+        }
+        // locus://teleport?lat=…&lon=…&name=…, and anything else that spells a
+        // location out: a geo: link, a shared Apple/Google/OSM maps URL.
+        //
+        // The pin is dropped either way, but only `teleport` moves you — a link
+        // from a web page shouldn't be able to quietly change where a phone
+        // says it is, and `locus://pin` covers "look at this" without that.
+        if let match = CoordinateParser.fromURL(url) {
+            NotificationCenter.default.post(
+                name: .locusOpenLocation,
+                object: LocusLocationLink(
+                    match: match,
+                    teleports: url.host?.lowercased() == "teleport"
+                )
+            )
         }
     }
 }
 
+/// A location arriving from outside the app, and what to do with it.
+struct LocusLocationLink {
+    var match: CoordinateParser.Match
+    var teleports: Bool
+}
+
 extension Notification.Name {
     static let locusImportGPX = Notification.Name("locusImportGPX")
+    /// Posted with a `LocusLocationLink` when an incoming URL names a place.
+    static let locusOpenLocation = Notification.Name("locusOpenLocation")
     /// Posted with a `TunnelBlocker` when something that needed the tunnel found
     /// that this build can't raise one, so the map can open the explanation.
     static let locusShowTunnelTrouble = Notification.Name("locusShowTunnelTrouble")

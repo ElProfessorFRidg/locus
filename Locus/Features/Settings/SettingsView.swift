@@ -611,10 +611,13 @@ struct PlacesView: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(place.name).foregroundStyle(.primary)
-                Text(String(format: "%.5f, %.5f", place.latitude, place.longitude))
+                Text(CoordinateParser.text(place.coordinate))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
+        }
+        .contextMenu {
+            LocationActionsMenu(coordinate: place.coordinate, name: place.name)
         }
     }
 }

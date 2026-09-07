@@ -97,6 +97,13 @@ struct MapHomeView: View {
             guard let url = note.object as? URL else { return }
             importGPX(url)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .locusOpenLocation)) { note in
+            guard let link = note.object as? LocusLocationLink else { return }
+            go(to: link.match)
+            if link.teleports {
+                session.teleport(to: link.match.coordinate, pairing: pairing)
+            }
+        }
         .fileImporter(
             isPresented: $showGPXImporter,
             allowedContentTypes: [.xml, .data],
@@ -247,7 +254,13 @@ struct MapHomeView: View {
                 searchBar
                     .locusGlassID("search", in: chromeGlass)
 
-                if !searchText.isEmpty && !search.results.isEmpty {
+                // A coordinate beats the place search outright — it is not a
+                // guess about what you meant, it is the answer.
+                if let match = typedCoordinate {
+                    coordinateResult(match)
+                        .locusGlassID("coordinate", in: chromeGlass)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                } else if !searchText.isEmpty && !search.results.isEmpty {
                     searchResults
                         .locusGlassID("results", in: chromeGlass)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -299,7 +312,10 @@ struct MapHomeView: View {
                 .submitLabel(.search)
                 .onSubmit { searchFocused = false }
                 .onChange(of: searchText) { _, value in
-                    search.query = value
+                    // Don't ask MapKit to find a business called
+                    // "48.8584, 2.2945" — and clear any results still on
+                    // screen from before the coordinate was pasted in.
+                    search.query = CoordinateParser.looksLikeCoordinate(value) ? "" : value
                 }
             if searchFocused || !searchText.isEmpty {
                 Button {
@@ -318,11 +334,62 @@ struct MapHomeView: View {
                     .font(.subheadline.weight(.semibold))
                     .buttonStyle(.plain)
                     .foregroundStyle(LocusTheme.accent)
+            } else if searchText.isEmpty {
+                // A coordinate copied out of a chat is the commonest way of
+                // being told where to go, and pasting it used to mean tapping
+                // the field, holding, picking Paste, then reading it back to
+                // check it survived. `PasteButton` also asks iOS for the
+                // clipboard without the "Locus pasted from…" banner.
+                PasteButton(payloadType: String.self) { strings in
+                    guard let text = strings.first else { return }
+                    Task { @MainActor in acceptPasted(text) }
+                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .tint(LocusTheme.accent)
+                .accessibilityLabel("Paste a location")
             }
         }
         .padding(12)
         .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    /// What is in the search field, when it is a location rather than the name
+    /// of one — coordinates, a `geo:` link, an Apple/Google/OSM maps URL.
+    private var typedCoordinate: CoordinateParser.Match? {
+        CoordinateParser.parse(searchText)
+    }
+
+    private func coordinateResult(_ match: CoordinateParser.Match) -> some View {
+        Button {
+            go(to: match)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(LocusTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(match.name ?? "Go to these coordinates")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(CoordinateParser.text(match.coordinate))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.forward")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private var searchResults: some View {
@@ -593,6 +660,44 @@ struct MapHomeView: View {
                 // ever pressed.
                 session.pushNamedRecent(name: title, coordinate: coord)
             }
+        }
+    }
+
+    /// Drops the pin on a parsed location and frames it. Deliberately stops
+    /// short of teleporting: a pasted link is a suggestion, and the Teleport
+    /// button is right there.
+    private func go(to match: CoordinateParser.Match) {
+        session.setPin(match.coordinate)
+        pinPlaceName = match.name
+        pinSelected = false
+        searchText = ""
+        search.query = ""
+        searchFocused = false
+        followsDrive = false
+        if let name = match.name {
+            session.pushNamedRecent(name: name, coordinate: match.coordinate)
+        }
+        withAnimation(.easeInOut(duration: 0.35)) {
+            position = .region(MKCoordinateRegion(
+                center: match.coordinate,
+                latitudinalMeters: 1200,
+                longitudinalMeters: 1200
+            ))
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Pasted text that is a location goes straight to the map; anything else
+    /// is a search term, and lands in the field where a search term belongs.
+    private func acceptPasted(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let match = CoordinateParser.parse(trimmed) {
+            go(to: match)
+        } else {
+            searchText = trimmed
+            search.query = trimmed
+            searchFocused = true
         }
     }
 

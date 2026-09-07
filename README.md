@@ -22,6 +22,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Siri and Shortcuts — teleport, stop, connect the tunnel, switch profile
 - Draw a path, or import / export GPX (timestamps replayed at their recorded pace)
 - Background keep-alive + live status bar + drop alerts
+- Paste a coordinate or a Maps link into search; long-press the status bar to copy, link or share where you are
 - Favorites & recents
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25
@@ -86,6 +87,22 @@ Locus uses the MIT-licensed [idevice](https://github.com/jkcoxson/idevice) FFI t
 **iOS 27:** Settings → **Pair on this iPhone** advertises `_remotepairing-pairable-host._tcp`. Confirm the 6-digit code under Settings › Privacy & Security › Developer Mode › Pair with Host — no computer.
 
 **iOS 18–26:** import an **RPPairing** file once from [idevice_pair](https://github.com/jkcoxson/idevice_pair/releases).
+
+### Links Locus understands
+
+Paste any of these into the search field, or open them from another app:
+
+```
+48.85837, 2.29448              48.85837 2.29448        48°51'30.1"N 2°17'40.1"E
+geo:48.85837,2.29448           geo:0,0?q=48.85837,2.29448(Eiffel Tower)
+https://maps.apple.com/?ll=48.85837,2.29448
+https://www.google.com/maps/place/Eiffel+Tower/@48.85837,2.29448,17z
+https://www.openstreetmap.org/#map=17/48.85837/2.29448
+locus://pin?lat=48.85837&lon=2.29448&name=Eiffel%20Tower
+locus://teleport?lat=48.85837&lon=2.29448
+```
+
+`locus://pin` only drops the pin; `locus://teleport` sets the location. Both bring Locus to the front, so nothing happens without you seeing it. Long-press the status bar (or any saved place) to copy coordinates, copy a `locus://` link back, open the spot in Maps, or share it.
 
 ### The tunnel
 
