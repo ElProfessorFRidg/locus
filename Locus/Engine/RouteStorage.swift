@@ -143,6 +143,10 @@ struct SavedRoute: Codable, Identifiable, Equatable, Sendable {
     /// geocoding a list on every appearance is how you get rate-limited.
     var startName: String?
     var endName: String?
+    /// Which road each stretch is on, so a saved commute keeps the limit
+    /// estimate it was built with instead of falling back to reading the shape
+    /// of the tarmac every time it is loaded.
+    var roads: [RoadSegment] = []
     var overrides: [LimitOverride] = []
     var createdAt = Date()
     /// Bumped every time the route is driven, so the list can lead with what
@@ -186,6 +190,7 @@ struct SavedRoute: Codable, Identifiable, Equatable, Sendable {
         distance = route.distance
         expectedTravelTime = route.expectedTravelTime
         recordedTimes = route.recordedTimes
+        roads = route.roads
         self.overrides = overrides
     }
 
@@ -201,6 +206,7 @@ struct SavedRoute: Codable, Identifiable, Equatable, Sendable {
         recordedTimes = try? container.decodeIfPresent([Date].self, forKey: .recordedTimes)
         startName = try? container.decodeIfPresent(String.self, forKey: .startName)
         endName = try? container.decodeIfPresent(String.self, forKey: .endName)
+        roads = (try? container.decode([RoadSegment].self, forKey: .roads)) ?? []
         overrides = (try? container.decode([LimitOverride].self, forKey: .overrides)) ?? []
         createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? Date()
         lastDrivenAt = try? container.decodeIfPresent(Date.self, forKey: .lastDrivenAt)
@@ -215,7 +221,8 @@ struct SavedRoute: Codable, Identifiable, Equatable, Sendable {
             expectedTravelTime: expectedTravelTime,
             // Only when there is one per point: a pace mapped onto the wrong
             // places is worse than no pace at all.
-            recordedTimes: recordedTimes?.count == coordinates.count ? recordedTimes : nil
+            recordedTimes: recordedTimes?.count == coordinates.count ? recordedTimes : nil,
+            roads: roads
         )
     }
 }
@@ -229,6 +236,7 @@ struct RouteResumeState: Codable, Equatable, Sendable {
     /// Carried for the same reason `SavedRoute` carries it: a drive replaying a
     /// recorded pace should come back replaying that pace, not a generic one.
     var recordedTimes: [Date]?
+    var roads: [RoadSegment] = []
     var overrides: [LimitOverride]
     /// How far along the drive had got, in metres.
     var travelled: CLLocationDistance
@@ -251,7 +259,8 @@ struct RouteResumeState: Codable, Equatable, Sendable {
             coordinates: coordinates.clLocations,
             distance: distance,
             expectedTravelTime: expectedTravelTime,
-            recordedTimes: recordedTimes?.count == coordinates.count ? recordedTimes : nil
+            recordedTimes: recordedTimes?.count == coordinates.count ? recordedTimes : nil,
+            roads: roads
         )
     }
 }
