@@ -96,7 +96,7 @@ struct RoutePlannerSheet: View {
                         systemImage: "road.lanes"
                     )
                     Spacer()
-                    if workspace.isBuilding { ProgressView() }
+                    buildingIndicator
                 }
             }
             .disabled(workspace.isBuilding || workspace.stops.count < 2)
@@ -104,6 +104,29 @@ struct RoutePlannerSheet: View {
             Text("Where it goes")
         } footer: {
             Text(endpointsFooter)
+        }
+    }
+
+    /// A spinner, and what it is waiting for.
+    ///
+    /// Snapping a drawn path is up to ten routing requests. A bare spinner for
+    /// that long is indistinguishable from a hang, and the one thing that fixes
+    /// it — knowing there are ten of them and which one you're on — was already
+    /// known and not said.
+    @ViewBuilder
+    private var buildingIndicator: some View {
+        if workspace.isBuilding {
+            HStack(spacing: 8) {
+                if let progress = workspace.buildProgress {
+                    Text(progress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .transition(.opacity)
+                }
+                ProgressView()
+            }
+            .animation(.default, value: workspace.buildProgress)
         }
     }
 
@@ -242,30 +265,53 @@ struct RoutePlannerSheet: View {
     private var routesSection: some View {
         Section("Which way") {
             ForEach(workspace.routes) { route in
-                Button {
-                    workspace.selectedRouteID = route.id
-                    onFocus(route.coordinates)
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: workspace.selectedRoute?.id == route.id
-                              ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(workspace.selectedRoute?.id == route.id
-                                             ? LocusTheme.accent : .secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(route.name)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Text(routeSubtitle(route))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                alternativeRow(route)
             }
         }
+    }
+
+    private func alternativeRow(_ route: BuiltRoute) -> some View {
+        let isSelected = workspace.selectedRoute?.id == route.id
+
+        return Button {
+            workspace.selectedRouteID = route.id
+            onFocus(route.coordinates)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? LocusTheme.accent : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(route.name)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        ForEach(routeBadges[route.id] ?? []) { badge in
+                            Text(badge.title)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule().fill(LocusTheme.accent.opacity(0.18))
+                                )
+                                .foregroundStyle(LocusTheme.accent)
+                        }
+                    }
+                    Text(routeSubtitle(route))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Computed once per redraw rather than per row: `badges(for:)` walks the
+    /// whole set, and asking it three times to label three rows is three times
+    /// the work for the same answer.
+    private var routeBadges: [UUID: [RouteBadge]] {
+        RouteComparison.badges(for: workspace.routes)
     }
 
     /// Distance and time, plus how this one differs from the quickest.
@@ -761,7 +807,7 @@ struct RoutePlannerSheet: View {
                 HStack {
                     Label("Snap the drawn path to roads", systemImage: "point.topleft.down.to.point.bottomright.curvepath.fill")
                     Spacer()
-                    if workspace.isBuilding { ProgressView() }
+                    buildingIndicator
                 }
             }
             .disabled(workspace.drawnPath.count < 2 || workspace.isBuilding)

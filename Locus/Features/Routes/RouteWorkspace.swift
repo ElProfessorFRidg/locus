@@ -61,6 +61,10 @@ final class RouteWorkspace: ObservableObject {
     @Published var drawMode = false
 
     @Published var isBuilding = false
+    /// "Routing leg 4 of 10…" while a multi-leg build is in flight. Snapping a
+    /// drawn path is up to ten routing requests, and an undifferentiated
+    /// spinner for that long reads as a hang.
+    @Published private(set) var buildProgress: String?
 
     /// Hand corrections to the estimated limits, for the selected route.
     @Published private(set) var overrides: [LimitOverride] = []
@@ -245,6 +249,8 @@ final class RouteWorkspace: ObservableObject {
         savedRouteID = nil
         overrides = []
         stretches = []
+        previewUsesLimits = false
+        outline = nil
     }
 
     func adopt(_ built: [BuiltRoute]) {
@@ -393,18 +399,28 @@ final class RouteWorkspace: ObservableObject {
         }
 
         isBuilding = true
-        defer { isBuilding = false }
+        defer {
+            isBuilding = false
+            buildProgress = nil
+        }
 
         do {
             let built = try await RouteBuilder.roadRoute(
                 through: stops.map(\.coordinate),
-                mode: mode
+                mode: mode,
+                onProgress: { [weak self] done, total in self?.noteProgress(done, of: total) }
             )
             adopt(built)
             return nil
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// A two-point route is one request and reports nothing — a label that
+    /// appears and vanishes inside a second is worse than no label.
+    private func noteProgress(_ done: Int, of total: Int) {
+        buildProgress = total > 1 ? "Routing leg \(min(done + 1, total)) of \(total)…" : nil
     }
 
     /// Turns the current route round so it can be driven back.
@@ -434,10 +450,17 @@ final class RouteWorkspace: ObservableObject {
         guard drawnPath.count >= 2 else { return "Draw a path on the map first." }
 
         isBuilding = true
-        defer { isBuilding = false }
+        defer {
+            isBuilding = false
+            buildProgress = nil
+        }
 
         do {
-            let route = try await RouteBuilder.snapToRoads(path: drawnPath, mode: mode)
+            let route = try await RouteBuilder.snapToRoads(
+                path: drawnPath,
+                mode: mode,
+                onProgress: { [weak self] done, total in self?.noteProgress(done, of: total) }
+            )
             adopt([route])
             drawnPath.removeAll()
             drawMode = false

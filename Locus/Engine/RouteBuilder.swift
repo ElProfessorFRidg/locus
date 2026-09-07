@@ -8,7 +8,7 @@ import MapKit
 /// particular roads are — MapKit exposes no posted speed limits at all — so it
 /// is carried through to `RouteSimulator` rather than thrown away with the rest
 /// of the `MKRoute`.
-struct BuiltRoute: Identifiable {
+struct BuiltRoute: Identifiable, Sendable {
     let id = UUID()
     let name: String
     let coordinates: [CLLocationCoordinate2D]
@@ -82,6 +82,62 @@ struct BuiltRoute: Identifiable {
     }
 }
 
+/// Why one alternative is worth picking over the others.
+///
+/// Apple hands back two or three ways to the same place and the list showed
+/// three near-identical rows of numbers. The fastest one was identifiable only
+/// by being the one with no "+4 min" after it — a fact you had to work out from
+/// an absence. And the shortest route is often a *different* row, which nothing
+/// said at all.
+enum RouteBadge: String, CaseIterable, Identifiable {
+    case fastest
+    case shortest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fastest: return "Fastest"
+        case .shortest: return "Shortest"
+        }
+    }
+}
+
+enum RouteComparison {
+    /// A route has to beat the field by this much to be worth calling out.
+    /// Below it the rows are the same journey and a badge is decoration.
+    static let meaningfulSeconds: TimeInterval = 30
+    static let meaningfulMetres: CLLocationDistance = 100
+
+    /// Which of these routes deserve a badge, keyed by route id.
+    ///
+    /// Nothing is badged when there is only one route, or when the winner isn't
+    /// meaningfully ahead — a "Fastest" label on a route eight seconds quicker
+    /// is a claim the numbers don't support.
+    static func badges(for routes: [BuiltRoute]) -> [UUID: [RouteBadge]] {
+        guard routes.count > 1 else { return [:] }
+        var result: [UUID: [RouteBadge]] = [:]
+
+        let timed = routes.filter { $0.expectedTravelTime > 1 }
+        if timed.count > 1,
+           let quickest = timed.min(by: { $0.expectedTravelTime < $1.expectedTravelTime }),
+           let runnerUp = timed.filter({ $0.id != quickest.id })
+               .min(by: { $0.expectedTravelTime < $1.expectedTravelTime }),
+           runnerUp.expectedTravelTime - quickest.expectedTravelTime >= meaningfulSeconds {
+            result[quickest.id, default: []].append(.fastest)
+        }
+
+        if let nearest = routes.min(by: { $0.distance < $1.distance }),
+           let runnerUp = routes.filter({ $0.id != nearest.id })
+               .min(by: { $0.distance < $1.distance }),
+           runnerUp.distance - nearest.distance >= meaningfulMetres {
+            result[nearest.id, default: []].append(.shortest)
+        }
+
+        return result
+    }
+}
+
 enum RouteBuilderError: LocalizedError {
     case notEnoughStops
     case noRoute
@@ -148,10 +204,15 @@ enum RouteBuilder {
     /// Alternatives are offered for a plain A → B only. Past that the choice is
     /// between 3ⁿ combinations of legs, which is not a choice anyone can act on,
     /// so each leg quietly takes the quickest way.
+    ///
+    /// - Parameter onProgress: called on the main actor with legs finished and
+    ///   legs total, so a ten-leg snap can say where it has got to instead of
+    ///   spinning silently for the better part of a minute.
     static func roadRoute(
         through stops: [CLLocationCoordinate2D],
         mode: TravelMode,
-        alternatives: Bool = true
+        alternatives: Bool = true,
+        onProgress: (@MainActor (Int, Int) -> Void)? = nil
     ) async throws -> [BuiltRoute] {
         guard stops.count >= 2 else {
             throw RouteBuilderError.notEnoughStops
@@ -160,15 +221,14 @@ enum RouteBuilder {
             return try await roadRoutes(from: stops[0], to: stops[1], mode: mode, alternatives: alternatives)
         }
 
+        let pairs = Array(zip(stops, stops.dropFirst()))
+        let legs = try await routeLegs(pairs, mode: mode, onProgress: onProgress)
+
         var coordinates: [CLLocationCoordinate2D] = []
         var distance: CLLocationDistance = 0
         var travelTime: TimeInterval = 0
 
-        for (index, pair) in zip(stops, stops.dropFirst()).enumerated() {
-            let legs = try await roadRoutes(from: pair.0, to: pair.1, mode: mode, alternatives: false)
-            guard let leg = legs.min(by: { $0.expectedTravelTime < $1.expectedTravelTime }) else {
-                throw RouteBuilderError.legFailed(index + 1)
-            }
+        for (index, leg) in legs.enumerated() {
             // Every leg after the first starts where the previous one ended.
             // Keeping both copies would leave a zero-length step for the walker
             // to divide by when it works out a bearing.
@@ -188,6 +248,66 @@ enum RouteBuilder {
         )]
     }
 
+    /// How many legs are routed at once.
+    ///
+    /// They don't depend on each other, so routing them one at a time made a
+    /// ten-leg snap ten round trips deep — the better part of a minute of
+    /// spinner. Not unbounded, though: `MKDirections` is rate-limited per app,
+    /// and ten simultaneous requests is the shape of traffic that trips it.
+    /// Three in flight is roughly a third of the wall-clock time and still
+    /// reads as one client working, not a flood.
+    private static let concurrentLegs = 3
+
+    /// Routes each pair independently, keeping the results in the order given.
+    ///
+    /// A sliding window rather than one big group: the window bounds how many
+    /// requests Apple sees at once, and results are placed by index so a leg
+    /// finishing early can't reorder the route.
+    private static func routeLegs(
+        _ pairs: [(CLLocationCoordinate2D, CLLocationCoordinate2D)],
+        mode: TravelMode,
+        onProgress: (@MainActor (Int, Int) -> Void)?
+    ) async throws -> [BuiltRoute] {
+        try await withThrowingTaskGroup(of: (Int, BuiltRoute).self) { group in
+            var results = [BuiltRoute?](repeating: nil, count: pairs.count)
+            var next = 0
+            var finished = 0
+
+            func addTask(_ index: Int) {
+                let (from, to) = pairs[index]
+                group.addTask {
+                    let legs = try await roadRoutes(from: from, to: to, mode: mode, alternatives: false)
+                    guard let best = legs.min(by: { $0.expectedTravelTime < $1.expectedTravelTime }) else {
+                        throw RouteBuilderError.legFailed(index + 1)
+                    }
+                    return (index, best)
+                }
+            }
+
+            while next < min(concurrentLegs, pairs.count) {
+                addTask(next)
+                next += 1
+            }
+
+            while let (index, leg) = try await group.next() {
+                results[index] = leg
+                finished += 1
+                await onProgress?(finished, pairs.count)
+                if next < pairs.count {
+                    addTask(next)
+                    next += 1
+                }
+            }
+
+            // A leg that came back with nothing throws above, so a nil here
+            // would mean the group ended early — which cancellation does.
+            return try results.enumerated().map { index, leg in
+                guard let leg else { throw RouteBuilderError.legFailed(index + 1) }
+                return leg
+            }
+        }
+    }
+
     /// Pulls a finger-drawn line onto real roads.
     ///
     /// A drawn path is a rough intention — it cuts corners, crosses buildings
@@ -201,12 +321,15 @@ enum RouteBuilder {
     static func snapToRoads(
         path: [CLLocationCoordinate2D],
         mode: TravelMode,
-        maximumLegs: Int = 10
+        maximumLegs: Int = 10,
+        onProgress: (@MainActor (Int, Int) -> Void)? = nil
     ) async throws -> BuiltRoute {
         let stops = anchors(along: path, maximum: maximumLegs + 1)
         guard stops.count >= 2 else { throw RouteBuilderError.notEnoughStops }
 
-        let built = try await roadRoute(through: stops, mode: mode, alternatives: false)
+        let built = try await roadRoute(
+            through: stops, mode: mode, alternatives: false, onProgress: onProgress
+        )
         guard let route = built.first else { throw RouteBuilderError.noRoute }
         return BuiltRoute(
             name: "Drawn path, on roads",
