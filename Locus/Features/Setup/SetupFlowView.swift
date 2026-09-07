@@ -10,6 +10,9 @@ struct SetupFlowView: View {
     var onFinished: () -> Void
 
     @State private var step: Step
+    /// Which way the page slide should go, so retreating doesn't animate like
+    /// arriving somewhere new.
+    @State private var isMovingBack = false
     @State private var appear = false
     @State private var showImporter = false
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
@@ -40,7 +43,7 @@ struct SetupFlowView: View {
             background
 
             VStack(spacing: 0) {
-                progressBar
+                header
                     .padding(.horizontal, 24)
                     .padding(.top, 12)
 
@@ -57,8 +60,8 @@ struct SetupFlowView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .id(step)
                 .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
+                    insertion: .move(edge: isMovingBack ? .leading : .trailing).combined(with: .opacity),
+                    removal: .move(edge: isMovingBack ? .trailing : .leading).combined(with: .opacity)
                 ))
             }
             .padding(.bottom, 8)
@@ -85,7 +88,7 @@ struct SetupFlowView: View {
         .onChange(of: pairing.hasPairingFile) { _, hasFile in
             if hasFile, step == .welcome || step == .pairing {
                 SetupGate.markInProgress()
-                withAnimation { step = .vpn }
+                go(to: .vpn)
             }
         }
         .sheet(isPresented: $showImporter) {
@@ -94,7 +97,7 @@ struct SetupFlowView: View {
                     showImporter = false
                     do {
                         try pairing.importPairing(from: url)
-                        withAnimation { step = .vpn }
+                        go(to: .vpn)
                     } catch {
                         session.lastError = error.localizedDescription
                     }
@@ -164,17 +167,70 @@ struct SetupFlowView: View {
         }
     }
 
+    /// The bar plus a way back out of the step you're on.
+    ///
+    /// This walkthrough used to be forward-only. Tap "Get started" and the
+    /// welcome was gone; import the wrong pairing file and you landed on the
+    /// tunnel page with no route back to fix it. Force-quitting didn't help
+    /// either — `initialStep` sends a half-finished setup straight back to the
+    /// page you were trying to leave.
+    private var header: some View {
+        HStack(spacing: 12) {
+            Button(action: goBack) {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(step == .welcome ? 0 : 1)
+            .disabled(step == .welcome)
+            .accessibilityLabel("Back")
+
+            progressBar
+        }
+    }
+
     private var progressBar: some View {
         HStack(spacing: 8) {
             ForEach(Step.allCases, id: \.rawValue) { s in
-                Capsule()
-                    .fill(s.rawValue <= step.rawValue ? LocusTheme.accent : Color.white.opacity(0.12))
-                    .frame(height: 3)
-                    .frame(maxWidth: .infinity)
+                Button {
+                    go(to: s)
+                } label: {
+                    Capsule()
+                        .fill(s.rawValue <= step.rawValue ? LocusTheme.accent : Color.white.opacity(0.12))
+                        .frame(height: 3)
+                        .frame(maxWidth: .infinity)
+                        // A 3-point capsule is not a tap target.
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // Backwards only. Jumping forward would skip the pairing this
+                // whole flow exists to collect.
+                .disabled(s.rawValue >= step.rawValue)
+                .accessibilityLabel("Step \(s.rawValue + 1) of \(Step.allCases.count)")
+                .accessibilityAddTraits(s == step ? [.isSelected] : [])
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
+        .padding(.vertical, -14)
+    }
+
+    private func goBack() {
+        guard let previous = Step(rawValue: step.rawValue - 1) else { return }
+        go(to: previous)
+    }
+
+    /// Moves a page, and points the slide the right way. Set inside the same
+    /// animation block as the step itself so the transition is chosen with the
+    /// direction already known — otherwise going back still slides forward,
+    /// which reads as having gone somewhere new.
+    private func go(to destination: Step) {
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+            isMovingBack = destination.rawValue < step.rawValue
+            step = destination
+        }
     }
 
     // MARK: - Welcome
@@ -216,7 +272,7 @@ struct SetupFlowView: View {
 
                 primaryButton("Get started") {
                     SetupGate.markInProgress()
-                    withAnimation { step = .pairing }
+                    go(to: .pairing)
                 }
             }
             .padding(.horizontal, 24)
@@ -245,7 +301,7 @@ struct SetupFlowView: View {
 
             if supportsOnDevicePairing {
                 PairOnDeviceView(mode: .embedded) {
-                    withAnimation { step = .vpn }
+                    go(to: .vpn)
                 }
                 .environmentObject(pairing)
             } else {
@@ -259,7 +315,7 @@ struct SetupFlowView: View {
                     Button {
                         do {
                             try pairing.importPairingFromClipboard()
-                            withAnimation { step = .vpn }
+                            go(to: .vpn)
                         } catch {
                             session.lastError = error.localizedDescription
                         }
@@ -388,10 +444,21 @@ struct SetupFlowView: View {
                     .frame(maxWidth: .infinity)
                 }
 
-                if tunnelUp || activeBlocker == nil {
-                    primaryButton(tunnelUp ? "Start teleporting" : "Skip for now") {
-                        onFinished()
-                    }
+                if tunnelUp {
+                    primaryButton("Start teleporting") { onFinished() }
+                } else if activeBlocker == nil {
+                    // Skipping leaves the app unable to do the one thing it is
+                    // for. Styling that identically to "Start teleporting" —
+                    // same accent capsule, same weight — invited the tap that
+                    // ends the walkthrough in a state where nothing works.
+                    Button("Skip for now") { onFinished() }
+                        .locusSecondaryButton()
+
+                    Text("Teleporting won't work until the tunnel is on. You can turn it on later in Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Button("I’ve connected it — continue") {
                         onFinished()
