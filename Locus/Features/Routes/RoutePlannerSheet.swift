@@ -101,10 +101,20 @@ struct RoutePlannerSheet: View {
         } header: {
             Text("Where it goes")
         } footer: {
-            Text(workspace.stops.isEmpty
-                 ? "Tap a row, then tap the map — or search for a place. Routes follow Apple Maps' roads and footpaths for the current travel mode (\(session.travelMode.title.lowercased()))."
-                 : "Drag any marker on the map to move it. Reorder or swipe to delete here.")
+            Text(endpointsFooter)
         }
+    }
+
+    /// Built as a `String` rather than inline in the `Text`: a ternary between
+    /// two literals where one interpolates is one of the slower things you can
+    /// hand SwiftUI's type-checker.
+    private var endpointsFooter: String {
+        guard workspace.stops.isEmpty else {
+            return "Drag any marker on the map to move it. Reorder or swipe to delete here."
+        }
+        let mode = session.travelMode.title.lowercased()
+        return "Tap a row, then tap the map — or search for a place. "
+            + "Routes follow Apple Maps' roads and footpaths for the current travel mode (\(mode))."
     }
 
     private func stopRow(index: Int, stop: RouteStop) -> some View {

@@ -14,7 +14,10 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - One-tap teleport (map pin or place search)
 - **Built-in tunnel** — Locus raises the loopback tunnel itself, no second app to launch
 - Live joystick — walk / run / cycle / drive with light speed variation
-- Walk/Drive routing on real roads & footpaths (MapKit), with Apple's alternatives to pick from
+- **Routes built by dragging them** — lettered markers on the map, stops along the way, tap an alternative to take it
+- Walk/Drive routing on real roads & footpaths (MapKit), with Apple's alternatives compared by "+4 min, −1.2 km"
+- Snap a finger-drawn path onto real roads, keeping its shape
+- A trip summary when you arrive: distance, time, average, fuel — and one tap to drive it again or drive it back
 - **Driving parameters** — respect the limit +10%, acceleration and braking, corner grip, traffic, junction stops, GPS scatter, lane offset, 0.5×–8× playback, loop / back-and-forth
 - Named driving profiles, saved routes, and resume after an interrupted drive
 - Route coloured by estimated limit before you drive it, with per-stretch corrections

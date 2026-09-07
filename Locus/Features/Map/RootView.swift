@@ -23,37 +23,7 @@ struct RootView: View {
 
             LocusGlassGroup(spacing: 16) {
                 VStack(spacing: 10) {
-                    if let trip = session.lastTrip {
-                        TripSummaryView(
-                            trip: trip,
-                            profile: session.drive,
-                            economy: session.drive.showTripEconomy
-                                ? session.tripEconomy(distance: trip.distance)
-                                : nil,
-                            canSave: workspace.selectedRoute != nil && workspace.savedRouteID == nil,
-                            onDriveAgain: {
-                                session.lastTrip = nil
-                                session.driveRoute(workspace, pairing: pairing)
-                            },
-                            onReverse: {
-                                session.lastTrip = nil
-                                workspace.reverseSelectedRoute()
-                                session.driveRoute(workspace, pairing: pairing)
-                            },
-                            onSave: {
-                                guard let route = workspace.selectedRoute else { return }
-                                session.routeStore.save(
-                                    route,
-                                    named: route.name,
-                                    overrides: workspace.overrides
-                                )
-                                session.flash("Saved “\(route.name)”")
-                            },
-                            onDismiss: { session.lastTrip = nil }
-                        )
-                        .locusGlassID("trip", in: bottomGlass)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
+                    tripSummary
 
                     if let telemetry = session.telemetry, session.drive.showHUD {
                         DriveHUDView(
@@ -119,6 +89,49 @@ struct RootView: View {
         } message: {
             Text(session.lastError ?? "")
         }
+    }
+
+    /// Extracted from `body` deliberately: seven arguments, three of them
+    /// multi-line closures, inline in a `ViewBuilder` is exactly the shape that
+    /// sends the type-checker away for a minute.
+    @ViewBuilder
+    private var tripSummary: some View {
+        if let trip = session.lastTrip {
+            TripSummaryView(
+                trip: trip,
+                profile: session.drive,
+                economy: economy(for: trip),
+                canSave: workspace.selectedRoute != nil && workspace.savedRouteID == nil,
+                onDriveAgain: driveAgain,
+                onReverse: driveBack,
+                onSave: saveDrivenRoute,
+                onDismiss: { session.lastTrip = nil }
+            )
+            .locusGlassID("trip", in: bottomGlass)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private func economy(for trip: TripSummary) -> (litres: Double, gramsCO2: Double)? {
+        guard session.drive.showTripEconomy else { return nil }
+        return session.tripEconomy(distance: trip.distance)
+    }
+
+    private func driveAgain() {
+        session.lastTrip = nil
+        session.driveRoute(workspace, pairing: pairing)
+    }
+
+    private func driveBack() {
+        session.lastTrip = nil
+        workspace.reverseSelectedRoute()
+        session.driveRoute(workspace, pairing: pairing)
+    }
+
+    private func saveDrivenRoute() {
+        guard let route = workspace.selectedRoute else { return }
+        session.routeStore.save(route, named: route.name, overrides: workspace.overrides)
+        session.flash("Saved “\(route.name)”")
     }
 }
 

@@ -227,56 +227,67 @@ struct MapHomeView: View {
     private func stopAnnotations(proxy: MapProxy) -> some MapContent {
         ForEach(Array(workspace.stops.enumerated()), id: \.element.id) { index, stop in
             Annotation("", coordinate: stop.coordinate, anchor: .bottom) {
-                RouteStopMarker(
-                    label: RouteStop.label(at: index),
-                    role: role(at: index),
-                    isFocused: workspace.focusedStopID == stop.id,
-                    isDragging: draggingStopID == stop.id,
-                    name: stop.name,
-                    onTap: {
-                        suppressNextMapTap = true
-                        withAnimation(.snappy) {
-                            // Tapping a stop asks for it: the next tap on the
-                            // map moves this one rather than adding another.
-                            workspace.focusedStopID =
-                                workspace.focusedStopID == stop.id ? nil : stop.id
-                        }
-                        updatePlacementHint()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            suppressNextMapTap = false
-                        }
-                    },
-                    onRemove: {
-                        suppressNextMapTap = true
-                        withAnimation { workspace.removeStop(stop.id) }
-                        updatePlacementHint()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            suppressNextMapTap = false
-                        }
-                    },
-                    onDragBegan: {
-                        searchFocused = false
-                        suppressNextMapTap = true
-                        draggingStopID = stop.id
-                    },
-                    onDragMoved: { globalPoint in
-                        if let coordinate = proxy.convert(globalPoint, from: .global) {
-                            workspace.dragStop(stop.id, to: coordinate)
-                        }
-                    },
-                    onDragEnded: {
-                        draggingStopID = nil
-                        // Rebuild once, on release. Routing on every frame of a
-                        // drag would be a request per pixel and Apple would
-                        // throttle it into uselessness.
-                        rebuildRouteIfPossible()
-                        resolveStopNames()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                            suppressNextMapTap = false
-                        }
-                    }
-                )
+                stopMarker(index: index, stop: stop, proxy: proxy)
             }
+        }
+    }
+
+    /// Built outside the `MapContentBuilder`: eight arguments, five of them
+    /// multi-statement closures, inline in a result builder is the shape that
+    /// sends Swift's type-checker away for several minutes.
+    private func stopMarker(index: Int, stop: RouteStop, proxy: MapProxy) -> some View {
+        RouteStopMarker(
+            label: RouteStop.label(at: index),
+            role: role(at: index),
+            isFocused: workspace.focusedStopID == stop.id,
+            isDragging: draggingStopID == stop.id,
+            name: stop.name,
+            onTap: { focusStop(stop.id) },
+            onRemove: { removeStop(stop.id) },
+            onDragBegan: {
+                searchFocused = false
+                suppressNextMapTap = true
+                draggingStopID = stop.id
+            },
+            onDragMoved: { globalPoint in
+                if let coordinate = proxy.convert(globalPoint, from: .global) {
+                    workspace.dragStop(stop.id, to: coordinate)
+                }
+            },
+            onDragEnded: { finishStopDrag() }
+        )
+    }
+
+    /// Tapping a stop asks for it: the next tap on the map moves this one
+    /// rather than adding another. Tapping it again lets go.
+    private func focusStop(_ id: UUID) {
+        suppressNextMapTap = true
+        withAnimation(.snappy) {
+            workspace.focusedStopID = workspace.focusedStopID == id ? nil : id
+        }
+        updatePlacementHint()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            suppressNextMapTap = false
+        }
+    }
+
+    private func removeStop(_ id: UUID) {
+        suppressNextMapTap = true
+        withAnimation { workspace.removeStop(id) }
+        updatePlacementHint()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            suppressNextMapTap = false
+        }
+    }
+
+    private func finishStopDrag() {
+        draggingStopID = nil
+        // Rebuild once, on release. Routing on every frame of a drag would be a
+        // request per pixel, and Apple would throttle it into uselessness.
+        rebuildRouteIfPossible()
+        resolveStopNames()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            suppressNextMapTap = false
         }
     }
 
