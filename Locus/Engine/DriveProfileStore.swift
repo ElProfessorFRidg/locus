@@ -19,6 +19,9 @@ final class DriveProfileStore: ObservableObject {
         static let legacyProfile = "locus.driveProfile"
     }
 
+    /// Pending coalesced write — see `persist()`.
+    private var persistTask: Task<Void, Never>?
+
     init() {
         let stored = Self.loadProfiles()
         let resolved = stored.isEmpty ? [Self.migratedOrDefault()] : stored
@@ -31,7 +34,7 @@ final class DriveProfileStore: ObservableObject {
         activeID = resolved.first { $0.id == savedID }?.id ?? resolved[0].id
         profiles = resolved
 
-        if stored.isEmpty { persist() }
+        if stored.isEmpty { persistNow() }
     }
 
     /// The profile in use. Setting it writes through, so an edit in the settings
@@ -59,13 +62,23 @@ final class DriveProfileStore: ObservableObject {
         persist()
     }
 
+    /// Writes anything the coalescing window is still holding.
+    ///
+    /// Called when Locus leaves the foreground, so a slider let go of a moment
+    /// before a swipe-up is on disk like any other.
+    func flush() {
+        persistTask?.cancel()
+        persistTask = nil
+        persistNow()
+    }
+
     @discardableResult
     func add(named name: String, from template: DriveProfile? = nil) -> DriveProfile {
         var profile = template ?? DriveProfile()
         profile.id = UUID()
         profile.name = Self.uniqueName(name, among: profiles)
         profiles.append(profile)
-        persist()
+        persistNow()
         select(profile.id)
         return profile
     }
@@ -79,7 +92,7 @@ final class DriveProfileStore: ObservableObject {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[index].name = Self.uniqueName(trimmed, among: profiles.filter { $0.id != id })
-        persist()
+        persistNow()
     }
 
     /// Removing the last profile would leave nothing to drive with, so the list
@@ -88,11 +101,11 @@ final class DriveProfileStore: ObservableObject {
         guard profiles.count > 1 else {
             profiles = [DriveProfile(name: "Default")]
             select(profiles[0].id)
-            persist()
+            persistNow()
             return
         }
         profiles.removeAll { $0.id == id }
-        persist()
+        persistNow()
         if activeID == id {
             select(profiles[0].id)
         }
@@ -150,11 +163,32 @@ final class DriveProfileStore: ObservableObject {
 
     // MARK: - Persistence
 
+    /// Coalesced write, for edits that arrive in a stream.
+    ///
+    /// The settings sliders bind straight to the live profile, which writes back
+    /// here on every frame of a drag: thirty-odd fields per profile encoded to
+    /// JSON and handed to `cfprefsd` a hundred times a second, when only the last
+    /// of those hundred is the value anybody keeps. Structural edits — adding,
+    /// renaming, deleting — go through `persistNow` instead, and `flush()` closes
+    /// the window when Locus goes to the background.
     private func persist() {
-        guard let data = try? JSONEncoder().encode(profiles) else { return }
+        persistTask?.cancel()
+        persistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.persistNow()
+        }
+    }
+
+    private func persistNow() {
+        guard let data = try? Self.encoder.encode(profiles) else { return }
         UserDefaults.standard.set(data, forKey: Keys.profiles)
         UserDefaults.standard.set(activeID.uuidString, forKey: Keys.activeID)
     }
+
+    /// One encoder, reused. Building one per write is a measurable share of the
+    /// cost of a write this small.
+    private static let encoder = JSONEncoder()
 
     private static func loadProfiles() -> [DriveProfile] {
         guard let data = UserDefaults.standard.data(forKey: Keys.profiles),

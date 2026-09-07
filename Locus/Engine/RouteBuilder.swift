@@ -587,9 +587,22 @@ enum GPXCodec {
         return Track(coordinates: coordinates, times: everyPointHasTime ? times : [])
     }
 
+    /// Compiled once each, not once per track point.
+    ///
+    /// These three were being built inside the per-point parse: a GPX with ten
+    /// thousand points compiled thirty thousand `NSRegularExpression` objects,
+    /// which is most of what made importing a long recorded track feel like the
+    /// app had hung. Import runs on the main thread.
+    private static let latPattern = try? NSRegularExpression(pattern: "lat\\s*=\\s*\"([^\"]+)\"")
+    private static let lonPattern = try? NSRegularExpression(pattern: "lon\\s*=\\s*\"([^\"]+)\"")
+    private static let timePattern = try? NSRegularExpression(
+        pattern: "<time>([^<]+)</time>",
+        options: [.caseInsensitive]
+    )
+
     private static func coordinateFrom(attributes: String) -> CLLocationCoordinate2D? {
-        func number(_ key: String) -> Double? {
-            guard let regex = try? NSRegularExpression(pattern: "\(key)\\s*=\\s*\"([^\"]+)\""),
+        func number(_ regex: NSRegularExpression?) -> Double? {
+            guard let regex,
                   let match = regex.firstMatch(
                       in: attributes,
                       range: NSRange(attributes.startIndex..<attributes.endIndex, in: attributes)
@@ -597,7 +610,7 @@ enum GPXCodec {
                   let range = Range(match.range(at: 1), in: attributes) else { return nil }
             return Double(attributes[range])
         }
-        guard let lat = number("lat"), let lon = number("lon") else { return nil }
+        guard let lat = number(latPattern), let lon = number(lonPattern) else { return nil }
         return Geo.validCoordinate(latitude: lat, longitude: lon)
     }
 
@@ -606,15 +619,12 @@ enum GPXCodec {
         formatter: ISO8601DateFormatter,
         fallback: ISO8601DateFormatter
     ) -> Date? {
-        guard let regex = try? NSRegularExpression(
-            pattern: "<time>([^<]+)</time>",
-            options: [.caseInsensitive]
-        ),
-            let match = regex.firstMatch(
-                in: body,
-                range: NSRange(body.startIndex..<body.endIndex, in: body)
-            ),
-            let range = Range(match.range(at: 1), in: body) else { return nil }
+        guard let regex = timePattern,
+              let match = regex.firstMatch(
+                  in: body,
+                  range: NSRange(body.startIndex..<body.endIndex, in: body)
+              ),
+              let range = Range(match.range(at: 1), in: body) else { return nil }
 
         let raw = String(body[range]).trimmingCharacters(in: .whitespacesAndNewlines)
         // Fractional seconds are optional in GPX, and one formatter can't take

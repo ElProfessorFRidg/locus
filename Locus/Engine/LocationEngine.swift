@@ -163,7 +163,17 @@ enum LocationEngine {
             cleanup()
             return simulationCreate
         }
-        // location_simulation_new consumes/owns remote server lifecycle alongside handle
+        // Dropped rather than freed. `location_simulation_new` is *not* documented
+        // as consuming its server — the header says so explicitly where it is
+        // true (`remote_server_new`: "It is consumed and may not be used again")
+        // and says nothing of the sort here — so this most likely leaks one
+        // `RemoteServerHandle`, and the connection behind it, per handshake. It
+        // is left alone deliberately: freeing a handle the Rust side did take
+        // ownership of is a double free rather than a leak, and that cannot be
+        // settled from the header alone. Check it against the idevice revision
+        // this library was built from before changing it; if it borrows, the fix
+        // is to keep the pointer and let `cleanup()` free it after the
+        // simulation, which is already the order it frees in.
         remoteServer = nil
 
         if let setError = location_simulation_set(locationSimulation, latitude, longitude) {

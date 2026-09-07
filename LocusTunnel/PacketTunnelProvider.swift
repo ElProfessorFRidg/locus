@@ -38,6 +38,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastAppliedSettings: NEPacketTunnelNetworkSettings?
     private var didRebindForCellular = false
 
+    /// The last path line written to the log. Path updates arrive in bursts every
+    /// time the radio changes state, and each one used to cost an App Group file
+    /// append from a process iOS holds to a small memory ceiling. Only a path that
+    /// actually reads differently is worth a line. `pathMonitorQueue`-confined.
+    private var lastPathDescription: String?
+
+    /// Fixed table, built once rather than rebuilt on every path update.
+    private static let interfaceKinds: [(Network.NWInterface.InterfaceType, String)] = [
+        (.wifi, "wifi"), (.cellular, "cellular"), (.wiredEthernet, "wired"),
+        (.loopback, "loopback"), (.other, "other"),
+    ]
+
     // MARK: - Lifecycle
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -52,6 +64,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         deviceIPValue = ipToUInt32(tunnelDeviceIP)
         fakeIPValue = ipToUInt32(tunnelFakeIP)
         didRebindForCellular = false
+        lastPathDescription = nil
 
         LocusTunnelStatusFile.clear()
         log("Starting Locus tunnel method=\(method.rawValue) device=\(tunnelDeviceIP) fake=\(tunnelFakeIP)")
@@ -98,7 +111,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         log("Stopping tunnel, reason=\(reason.rawValue)")
+        // Drop the handler as well as the monitor: it captures `self`, and a
+        // stopped provider has no reason to keep the settings object it applied
+        // alive either.
+        pathMonitor.pathUpdateHandler = nil
         pathMonitor.cancel()
+        lastAppliedSettings = nil
+        lastPathDescription = nil
         completionHandler()
     }
 
@@ -118,7 +137,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // supportsIPv4 == false on cellular means an IPv6-only bearer with
             // 464XLAT — the documented cause of "tunnel connects but its utun
             // never binds to cellular".
-            self.log("Path: status=\(path.status) interfaces=\(interfaces) expensive=\(path.isExpensive) v4=\(path.supportsIPv4) v6=\(path.supportsIPv6)")
+            let description = "Path: status=\(path.status) interfaces=\(interfaces) expensive=\(path.isExpensive) v4=\(path.supportsIPv4) v6=\(path.supportsIPv6)"
+            if description != self.lastPathDescription {
+                self.lastPathDescription = description
+                self.log(description)
+            }
             self.rebindOnCellularAttach(path: path, interfaces: interfaces)
         }
         pathMonitor.start(queue: pathMonitorQueue)
@@ -127,11 +150,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// `NWPath`/`NWInterface` are module-qualified because NetworkExtension
     /// declares conflicting symbols with the same names in an extension target.
     private func describeInterfaces(_ path: Network.NWPath) -> String {
-        let types: [(Network.NWInterface.InterfaceType, String)] = [
-            (.wifi, "wifi"), (.cellular, "cellular"), (.wiredEthernet, "wired"),
-            (.loopback, "loopback"), (.other, "other"),
-        ]
-        let active = types.filter { path.usesInterfaceType($0.0) }.map { $0.1 }
+        let active = Self.interfaceKinds.filter { path.usesInterfaceType($0.0) }.map { $0.1 }
         return active.isEmpty ? "unknown" : active.joined(separator: "+")
     }
 
@@ -168,12 +187,40 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func readPacketsLoop() {
         packetFlow.readPackets { [weak self] packets, protocols in
             guard let self else { return }
-            var modified = packets
-            for index in modified.indices where protocols[index].int32Value == AF_INET {
-                self.rewritePacket(&modified[index])
-            }
-            self.packetFlow.writePackets(modified, withProtocols: protocols)
+            self.forward(packets, protocols: protocols)
             self.readPacketsLoop()
+        }
+    }
+
+    /// Rewrites what needs rewriting and hands the batch straight back.
+    ///
+    /// The address check happens through a *read-only* view of each packet
+    /// first. `Data.withUnsafeMutableBytes` triggers copy-on-write the moment it
+    /// is called, so the previous version malloc'd and memcpy'd every IPv4 packet
+    /// on the tunnel — including the ones it then decided not to touch — and a
+    /// batch where nothing matched still rebuilt the whole array.
+    private func forward(_ packets: [Data], protocols: [NSNumber]) {
+        var modified = packets
+        var didRewriteAny = false
+
+        for index in packets.indices where protocols[index].int32Value == AF_INET {
+            guard needsRewrite(packets[index]) else { continue }
+            rewritePacket(&modified[index])
+            didRewriteAny = true
+        }
+
+        packetFlow.writePackets(didRewriteAny ? modified : packets, withProtocols: protocols)
+    }
+
+    /// Whether either address field is one of the two this tunnel swaps, decided
+    /// without taking a mutable reference to the packet.
+    private func needsRewrite(_ packet: Data) -> Bool {
+        packet.withUnsafeBytes { (rawBuffer: UnsafeRawBufferPointer) -> Bool in
+            guard let base = rawBuffer.baseAddress, rawBuffer.count >= 20 else { return false }
+            let bytes = base.assumingMemoryBound(to: UInt8.self)
+            let ihl = Int(bytes[0] & 0x0F) * 4
+            guard ihl >= 20, rawBuffer.count >= ihl else { return false }
+            return readBE32(bytes, 12) == deviceIPValue || readBE32(bytes, 16) == fakeIPValue
         }
     }
 
@@ -329,7 +376,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return UInt16(~sum & 0xFFFF)
     }
 
-    private func readBE16(_ bytes: UnsafeMutablePointer<UInt8>, _ offset: Int) -> UInt16 {
+    /// `UnsafePointer`, not `UnsafeMutablePointer`, so `needsRewrite` can read a
+    /// packet through a read-only buffer. Swift converts a mutable pointer to a
+    /// const one implicitly, so the rewrite path is unchanged.
+    private func readBE16(_ bytes: UnsafePointer<UInt8>, _ offset: Int) -> UInt16 {
         UInt16(bytes[offset]) << 8 | UInt16(bytes[offset + 1])
     }
 
@@ -338,7 +388,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         bytes[offset + 1] = UInt8(value & 0xFF)
     }
 
-    private func readBE32(_ bytes: UnsafeMutablePointer<UInt8>, _ offset: Int) -> UInt32 {
+    private func readBE32(_ bytes: UnsafePointer<UInt8>, _ offset: Int) -> UInt32 {
         UInt32(bytes[offset]) << 24 | UInt32(bytes[offset + 1]) << 16
             | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
     }

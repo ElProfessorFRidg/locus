@@ -153,15 +153,18 @@ final class TunnelController: ObservableObject {
     /// True when the loopback address is already reachable, whoever put it there
     /// — Locus' own tunnel or the LocalDevVPN app. This is what the rest of the
     /// app asks before deciding a teleport can go ahead.
+    ///
+    /// Compared as 32-bit integers rather than as text. The status bar polls this
+    /// every two seconds for as long as Locus is on screen, and the previous
+    /// version ran every interface on the device through `getnameinfo` into a
+    /// 1 KB buffer and built a `String` from each one — dozens of allocations a
+    /// second to answer a question that is one compare per interface.
     nonisolated static var loopbackReachable: Bool {
-        let addresses = ipv4InterfaceAddresses()
-        let target = TunnelConfig.targetIP
-        if addresses.contains(target) { return true }
-
-        let parts = target.split(separator: ".")
-        guard parts.count == 4 else { return false }
-        let prefix = parts.dropLast().joined(separator: ".") + "."
-        return addresses.contains { $0.hasPrefix(prefix) }
+        guard let target = ipv4Value(TunnelConfig.targetIP) else { return false }
+        // Either end of the tunnel's /24 counts: LocalDevVPN numbers its own end
+        // differently, and either address being present means the utun is up.
+        let subnet = target & 0xFFFF_FF00
+        return hasIPv4Address { $0 == target || $0 & 0xFFFF_FF00 == subnet }
     }
 
     // MARK: - Connecting
@@ -394,6 +397,11 @@ final class TunnelController: ObservableObject {
         let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
         let gate = ProbeGate()
 
+        // Held so a probe that answers in thirty milliseconds doesn't leave a
+        // timer — and the continuation and connection it captures — alive for the
+        // whole five seconds. The method ladder runs six of these in a row.
+        var expiry: DispatchWorkItem?
+
         let reachable = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             connection.stateUpdateHandler = { state in
                 switch state {
@@ -406,11 +414,16 @@ final class TunnelController: ObservableObject {
                 }
             }
             connection.start(queue: .global(qos: .userInitiated))
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+
+            let deadline = DispatchWorkItem {
                 if gate.claim() { continuation.resume(returning: false) }
             }
+            expiry = deadline
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
         }
 
+        expiry?.cancel()
+        connection.stateUpdateHandler = nil
         connection.cancel()
         return reachable
     }
@@ -463,28 +476,48 @@ final class TunnelController: ObservableObject {
 
     // MARK: - Interface enumeration
 
-    nonisolated static func ipv4InterfaceAddresses() -> [String] {
-        enumerateIPv4 { addr, _ in
-            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(
-                addr,
-                socklen_t(MemoryLayout<sockaddr_in>.size),
-                &host,
-                socklen_t(host.count),
-                nil,
-                0,
-                NI_NUMERICHOST
-            ) == 0 else { return nil }
-            return String(cString: host)
+    /// Whether any interface carries an IPv4 address `matches` accepts, as a
+    /// host-order 32-bit value. Allocates nothing.
+    nonisolated static func hasIPv4Address(_ matches: (UInt32) -> Bool) -> Bool {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0 else { return false }
+        defer { freeifaddrs(head) }
+
+        var cursor = head
+        while let current = cursor {
+            let interface = current.pointee
+            cursor = interface.ifa_next
+
+            guard let addr = interface.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+
+            let value = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+            }
+            if matches(value) { return true }
         }
+        return false
+    }
+
+    /// A dotted-quad as a host-order 32-bit value, or nil if it isn't one.
+    nonisolated static func ipv4Value(_ text: String) -> UInt32? {
+        let parts = text.split(separator: ".")
+        guard parts.count == 4 else { return nil }
+
+        var value: UInt32 = 0
+        for part in parts {
+            guard let octet = UInt32(part), octet <= 255 else { return nil }
+            value = value << 8 | octet
+        }
+        return value
     }
 
     nonisolated static func ipv4InterfaceNames() -> [String] {
-        enumerateIPv4 { _, name in name }
+        enumerateIPv4 { name in name }
     }
 
     nonisolated private static func enumerateIPv4(
-        _ transform: (UnsafeMutablePointer<sockaddr>, String) -> String?
+        _ transform: (String) -> String?
     ) -> [String] {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, head != nil else { return [] }
@@ -499,7 +532,7 @@ final class TunnelController: ObservableObject {
             guard let addr = interface.ifa_addr,
                   addr.pointee.sa_family == UInt8(AF_INET) else { continue }
 
-            if let value = transform(addr, String(cString: interface.ifa_name)) {
+            if let value = transform(String(cString: interface.ifa_name)) {
                 results.append(value)
             }
         }

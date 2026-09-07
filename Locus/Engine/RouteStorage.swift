@@ -265,6 +265,24 @@ struct RouteResumeState: Codable, Equatable, Sendable {
     }
 }
 
+/// The part of a resume state that changes while a drive is playing.
+///
+/// Split out because the rest of `RouteResumeState` — chiefly its coordinate
+/// list — does not change for the length of the drive, and rewriting all of it
+/// every few seconds to record how far along the car is meant hundreds of
+/// megabytes of flash writes over a long route. See `RouteStore.recordProgress`.
+struct RouteProgress: Codable, Equatable, Sendable {
+    var travelled: CLLocationDistance
+    var lap: Int
+    var savedAt: Date
+
+    init(_ state: RouteResumeState) {
+        travelled = state.travelled
+        lap = state.lap
+        savedAt = state.savedAt
+    }
+}
+
 /// Saved routes and the one interrupted drive, kept as files.
 ///
 /// A route is a few thousand coordinates; a handful of them in `UserDefaults`
@@ -295,6 +313,11 @@ final class RouteStore: ObservableObject {
     private let directory: URL
     private let routesURL: URL
     private let resumeURL: URL
+    private let progressURL: URL
+
+    /// The last resume state written in full. What `recordProgress` compares
+    /// against to decide whether the heavy file needs rewriting at all.
+    private var resumeAnchor: RouteResumeState?
 
     /// How a coordinate becomes a place name. Injected rather than called
     /// directly so this file stays free of MapKit: the store is persistence,
@@ -307,12 +330,27 @@ final class RouteStore: ObservableObject {
         directory = base.appendingPathComponent("Locus", isDirectory: true)
         routesURL = directory.appendingPathComponent("routes.json")
         resumeURL = directory.appendingPathComponent("resume.json")
+        progressURL = directory.appendingPathComponent("resume-progress.json")
 
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         routes = Self.decode([SavedRoute].self, from: routesURL) ?? []
 
-        if let state = Self.decode(RouteResumeState.self, from: resumeURL), state.isWorthResuming {
+        // The route, then however much further it got after that was written.
+        // A resume file with no progress beside it — one written by a build from
+        // before the split — still reads correctly on its own.
+        var restored = Self.decode(RouteResumeState.self, from: resumeURL)
+        if var state = restored,
+           let progress = Self.decode(RouteProgress.self, from: progressURL),
+           progress.savedAt >= state.savedAt {
+            state.travelled = progress.travelled
+            state.lap = progress.lap
+            state.savedAt = progress.savedAt
+            restored = state
+        }
+
+        if let state = restored, state.isWorthResuming {
             resumable = state
+            resumeAnchor = state
         } else {
             clearResume()
         }
@@ -460,18 +498,49 @@ final class RouteStore: ObservableObject {
 
     /// Called as a route plays, so an interrupted drive can be picked up rather
     /// than only after a clean exit.
+    ///
+    /// Only the three numbers that moved are written. The coordinate list is the
+    /// bulk of a resume state — a forty-kilometre route resampled for driving is
+    /// several thousand points, a few hundred kilobytes of JSON — and it cannot
+    /// change while the drive plays, but it was being re-encoded and rewritten
+    /// every five seconds all the same: on an hour-long route, hundreds of
+    /// megabytes of flash writes to record a distance that fits in eight bytes.
     func recordProgress(_ state: RouteResumeState) {
         resumable = state
-        Self.write(state, to: resumeURL)
+
+        guard let anchor = resumeAnchor, Self.isSameDrive(anchor, state) else {
+            resumeAnchor = state
+            Self.write(state, to: resumeURL)
+            Self.write(RouteProgress(state), to: progressURL)
+            return
+        }
+        Self.write(RouteProgress(state), to: progressURL)
     }
 
     func clearResume() {
         resumable = nil
-        // Through the same queue as the writes: deleting the file directly
-        // could land before a write already in flight, which would put it
+        resumeAnchor = nil
+        // Through the same queue as the writes: deleting the files directly
+        // could land before a write already in flight, which would put them
         // straight back.
-        let url = resumeURL
-        Self.diskQueue.async { try? FileManager.default.removeItem(at: url) }
+        let urls = [resumeURL, progressURL]
+        Self.diskQueue.async {
+            for url in urls { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    /// Whether two resume states describe the same drive — everything but how
+    /// far along it is.
+    private static func isSameDrive(_ a: RouteResumeState, _ b: RouteResumeState) -> Bool {
+        var lhs = a
+        var rhs = b
+        lhs.travelled = 0
+        rhs.travelled = 0
+        lhs.lap = 0
+        rhs.lap = 0
+        lhs.savedAt = .distantPast
+        rhs.savedAt = .distantPast
+        return lhs == rhs
     }
 
     // MARK: Files
@@ -498,7 +567,7 @@ final class RouteStore: ObservableObject {
 
     private static func write<T: Encodable & Sendable>(_ value: T, to url: URL) {
         diskQueue.async {
-            guard let data = try? JSONEncoder().encode(value) else { return }
+            guard let data = try? routeStoreEncoder.encode(value) else { return }
             try? data.write(to: url, options: .atomic)
         }
     }
@@ -510,3 +579,12 @@ final class RouteStore: ObservableObject {
         return try? JSONDecoder().decode(type, from: data)
     }
 }
+
+/// One encoder for every route-store write, only ever touched on the store's
+/// serial disk queue — so it is as confined as a local would be, without one
+/// being built per write.
+///
+/// File scope rather than a static on `RouteStore`: that class is `@MainActor`,
+/// and reading a main-actor static from the background queue the writes run on
+/// is a warning today and an error under Swift 6.
+private let routeStoreEncoder = JSONEncoder()
