@@ -223,4 +223,11 @@ enum DriveFormat {
     static func speed(_ metresPerSecond: CLLocationSpeed, unit: SpeedUnit) -> String {
         "\(Int(unit.fromMetresPerSecond(metresPerSecond).rounded())) \(unit.short)"
     }
+
+    /// A nudge step, short enough to sit inside a 36-point button.
+    static func stepLabel(_ metres: Double) -> String {
+        metres < 1
+            ? String(format: "%.1f m", metres)
+            : "\(Int(metres.rounded())) m"
+    }
 }

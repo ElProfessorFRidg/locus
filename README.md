@@ -23,6 +23,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Draw a path, or import / export GPX (timestamps replayed at their recorded pace)
 - Background keep-alive + live status bar + drop alerts
 - Paste a coordinate or a Maps link into search; long-press the status bar to copy, link or share where you are
+- Precision placement — pan under a crosshair, then nudge the pin 1 / 5 / 25 m at a time
 - Favorites & recents
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25

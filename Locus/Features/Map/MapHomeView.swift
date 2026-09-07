@@ -23,6 +23,12 @@ struct MapHomeView: View {
     /// Set after importing a GPX that carried timestamps, so the offer to
     /// replay it at its recorded pace appears where the import happened.
     @State private var importedPaceHint: String?
+    /// Crosshair placement and metre-at-a-time nudging.
+    @State private var precisionMode = false
+    @State private var nudgeStep: Double = 5
+    /// Where the crosshair is pointing. Only tracked while precision mode is
+    /// on — otherwise every frame of every pan would redraw this view.
+    @State private var mapCenter: CLLocationCoordinate2D?
 
     @Namespace private var chromeGlass
 
@@ -55,6 +61,9 @@ struct MapHomeView: View {
                     MapScaleView()
                 }
                 .mapControlVisibility(.automatic)
+                .onMapCameraChange(frequency: precisionMode ? .continuous : .onEnd) { context in
+                    mapCenter = context.region.center
+                }
                 .onTapGesture { point in
                     // A tap on the map while the keyboard is up is a tap to put
                     // the keyboard away. Dropping a pin under the thumb at the
@@ -63,11 +72,22 @@ struct MapHomeView: View {
                     let wasTyping = searchFocused
                     searchFocused = false
                     guard !wasTyping, !suppressNextMapTap, !isDraggingPin else { return }
+                    // In precision mode the map is the thing being moved, not
+                    // the pin: a tap is part of aiming, not a placement.
+                    guard !precisionMode else { return }
                     pinSelected = false
                     placePin(at: point, proxy: proxy)
                 }
             }
             .background(Color.black.ignoresSafeArea())
+
+            if precisionMode {
+                // Filling the stack is what centres it: the crosshair has to sit
+                // on the middle of the map, which is what the camera reports.
+                MapCrosshair()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
 
             topChrome
         }
@@ -281,6 +301,19 @@ struct MapHomeView: View {
                         .locusGlassID("locate", in: chromeGlass)
                 }
 
+                if precisionMode {
+                    PinPrecisionBar(
+                        center: mapCenter,
+                        pin: session.pin,
+                        step: $nudgeStep,
+                        onSetHere: setPinAtCrosshair,
+                        onNudge: nudgePin,
+                        onDone: { withAnimation(.snappy) { precisionMode = false } }
+                    )
+                    .locusGlassID("precision", in: chromeGlass)
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+                }
+
                 if workspace.drawMode {
                     drawModeBanner
                         .locusGlassID("draw", in: chromeGlass)
@@ -300,6 +333,7 @@ struct MapHomeView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: search.results.count)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: workspace.drawMode)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: importedPaceHint)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: precisionMode)
     }
 
     private var searchBar: some View {
@@ -438,6 +472,14 @@ struct MapHomeView: View {
             ) {
                 workspace.drawMode.toggle()
                 if !workspace.drawMode { workspace.drawnPath.removeAll() }
+            }
+
+            chromeIconButton(
+                "dot.viewfinder",
+                label: precisionMode ? "Leave precision mode" : "Place the pin precisely",
+                isOn: precisionMode
+            ) {
+                togglePrecisionMode()
             }
 
             favoriteButton
@@ -595,6 +637,50 @@ struct MapHomeView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Precision placement
+
+    /// Entering centres the map on the pin, so the crosshair starts on the
+    /// thing being adjusted rather than wherever the map happened to be left.
+    private func togglePrecisionMode() {
+        searchFocused = false
+        let entering = !precisionMode
+        withAnimation(.snappy) { precisionMode = entering }
+        guard entering else { return }
+        followsDrive = false
+        if workspace.drawMode {
+            // Both want the map taps. Precision mode wins, since it was just
+            // asked for.
+            workspace.drawMode = false
+        }
+        if let pin = session.pin {
+            mapCenter = pin
+            withAnimation(.easeInOut(duration: 0.3)) {
+                position = .region(MKCoordinateRegion(
+                    center: pin,
+                    latitudinalMeters: 220,
+                    longitudinalMeters: 220
+                ))
+            }
+        }
+    }
+
+    private func setPinAtCrosshair() {
+        guard let center = mapCenter else { return }
+        session.setPin(center)
+        pinPlaceName = nil
+        pinSelected = false
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+
+    /// Moves the pin by metres east and north. The map stays where it is: the
+    /// point of nudging is to watch the pin move against fixed ground.
+    private func nudgePin(east: Double, north: Double) {
+        guard let pin = session.pin else { return }
+        session.setPin(Geo.offset(pin, east: east, north: north))
+        pinPlaceName = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     /// Long press on the locate button: show where the phone actually is.
