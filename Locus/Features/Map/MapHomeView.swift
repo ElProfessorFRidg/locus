@@ -56,8 +56,13 @@ struct MapHomeView: View {
                 }
                 .mapControlVisibility(.automatic)
                 .onTapGesture { point in
+                    // A tap on the map while the keyboard is up is a tap to put
+                    // the keyboard away. Dropping a pin under the thumb at the
+                    // same time moved the place you had just searched for, at
+                    // the exact moment you went to look at it.
+                    let wasTyping = searchFocused
                     searchFocused = false
-                    guard !suppressNextMapTap, !isDraggingPin else { return }
+                    guard !wasTyping, !suppressNextMapTap, !isDraggingPin else { return }
                     pinSelected = false
                     placePin(at: point, proxy: proxy)
                 }
@@ -368,19 +373,34 @@ struct MapHomeView: View {
                 if !workspace.drawMode { workspace.drawnPath.removeAll() }
             }
 
-            if session.pin != nil {
-                chromeIconButton("star.circle", label: "Save this place") {
-                    if let pin = session.pin {
-                        let name = session.suggestedFavoriteName(for: pin, fallback: pinPlaceName)
-                        session.addFavorite(name: name, coordinate: pin)
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    }
-                }
-            }
+            favoriteButton
         }
         .padding(6)
         .locusGlass(.clear, in: Capsule())
         .contentShape(Capsule())
+    }
+
+    /// Stars the pin, and un-stars it again. It used to only ever add, so an
+    /// accidental star had to be undone from the Settings list — three taps and
+    /// a screen away from where it happened.
+    @ViewBuilder
+    private var favoriteButton: some View {
+        if let pin = session.pin {
+            let starred = session.isFavorite(pin)
+            chromeIconButton(
+                starred ? "star.circle.fill" : "star.circle",
+                label: starred ? "Remove from saved places" : "Save this place",
+                isOn: starred
+            ) {
+                if starred {
+                    session.removeFavorite(at: pin)
+                } else {
+                    let name = session.suggestedFavoriteName(for: pin, fallback: pinPlaceName)
+                    session.addFavorite(name: name, coordinate: pin)
+                }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
+        }
     }
 
     /// While a route plays the camera tracks the car. This is the way out of
@@ -469,7 +489,10 @@ struct MapHomeView: View {
     private var locateButton: some View {
         GlassIconButton(
             systemName: "location.fill",
-            accessibilityLabel: "Current location"
+            accessibilityLabel: session.isSpoofing
+                ? "Go to the simulated location. Long press for the real one."
+                : "Current location",
+            onLongPress: session.isSpoofing ? goToRealLocation : nil
         ) {
             searchFocused = false
             followsDrive = true
@@ -504,6 +527,26 @@ struct MapHomeView: View {
                     ))
                 )
             }
+        }
+    }
+
+    /// Long press on the locate button: show where the phone actually is.
+    ///
+    /// While spoofing, the locate button follows the simulated fix — the right
+    /// default, and also the reason there was no way to check what the real GPS
+    /// was doing without turning the spoof off first.
+    private func goToRealLocation() {
+        guard let real = session.realCoordinate else {
+            session.lastError = "No real GPS fix yet. Give Locus a moment with Location Services on."
+            return
+        }
+        followsDrive = false
+        withAnimation(.easeInOut(duration: 0.35)) {
+            position = .region(MKCoordinateRegion(
+                center: real,
+                latitudinalMeters: 900,
+                longitudinalMeters: 900
+            ))
         }
     }
 
@@ -543,7 +586,11 @@ struct MapHomeView: View {
                 searchText = ""
                 search.query = ""
                 searchFocused = false
-                session.addFavorite(name: title, coordinate: coord)
+                // Recent, not favourite. Searching for a place is not the same
+                // as starring it — this used to do both, so the favourites list
+                // filled up with everything anyone had ever looked up, and the
+                // star button next to the pin was already lit before it was
+                // ever pressed.
                 session.pushNamedRecent(name: title, coordinate: coord)
             }
         }
@@ -614,7 +661,11 @@ struct MapHomeView: View {
             return
         }
         let gpx = GPXCodec.export(path)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Locus-Route.gpx")
+        // Named after the route. Exporting three routes in a row used to write
+        // three files called Locus-Route.gpx, which Files and Mail then keep
+        // apart with "(1)" and "(2)" — leaving you to guess which is which.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(Self.exportFilename(for: workspace.selectedRoute?.name))
         do {
             try gpx.data(using: .utf8)?.write(to: url)
             let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)
@@ -625,6 +676,19 @@ struct MapHomeView: View {
         } catch {
             session.lastError = error.localizedDescription
         }
+    }
+
+    /// A filename that survives Files, AirDrop and Mail: no path separators, no
+    /// leading dot, never empty, and short enough to read on a share sheet.
+    static func exportFilename(for routeName: String?) -> String {
+        var cleaned = (routeName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        for bad in ["/", ":", "\\", "\u{0}"] {
+            cleaned = cleaned.replacingOccurrences(of: bad, with: "-")
+        }
+        while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.count > 60 { cleaned = String(cleaned.prefix(60)).trimmingCharacters(in: .whitespaces) }
+        return "\(cleaned.isEmpty ? "Locus Route" : cleaned).gpx"
     }
 
     /// Region that frames a whole path, with a little breathing room.

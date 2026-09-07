@@ -123,7 +123,7 @@ Building from source needs an Apple Developer account for code signing. The publ
 >
 > The App Group `group.com.chrismack.locus` is only used for the tunnel's diagnostic log. If it isn't provisioned, the log is empty and Settings says why; nothing else changes.
 
-`project.yml` is the source of truth. The committed `Locus.xcodeproj` is generated from it and goes stale whenever a target moves — **always run `xcodegen generate` before opening it**, or you'll build a project without the `LocusTunnel` extension. CI regenerates it on every run for the same reason.
+`project.yml` is the source of truth. `Locus.xcodeproj` is generated from it and is **not** in the repo — a committed copy goes stale whenever a target moves, and a stale one builds an app with no `LocusTunnel` extension without telling you. Run `xcodegen generate` first; CI does the same on every run.
 
 1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) if needed: `brew install xcodegen`
 2. Set your **Team ID** in `project.yml` (`DEVELOPMENT_TEAM`), *or* pick your team under Xcode → Signing & Capabilities after generating the project.

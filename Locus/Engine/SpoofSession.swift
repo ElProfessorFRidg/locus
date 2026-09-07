@@ -109,6 +109,12 @@ final class SpoofSession: ObservableObject {
     @Published var travelMode: TravelMode = .walk
     @Published var mapStyleIndex: Int = 0
     @Published var lastError: String?
+    /// A short confirmation for something that worked.
+    ///
+    /// Failures get an alert; successes shouldn't — a teleport that lands is
+    /// not worth a modal — but they were getting nothing at all, on a screen
+    /// where the pin was already sitting where you asked for it.
+    @Published private(set) var toast: String?
     @Published var isBusy = false
     @Published var joystickActive = false
 
@@ -153,6 +159,7 @@ final class SpoofSession: ObservableObject {
     private var routeGeneration = 0
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var joystickVector: CGVector = .zero
+    private var toastTask: Task<Void, Never>?
     private let locationKeeper = BackgroundKeepAlive()
 
     /// Reverse-geocodes the pin so coordinates aren't the only thing on screen.
@@ -190,6 +197,24 @@ final class SpoofSession: ObservableObject {
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
         }
+    }
+
+    /// Shows `message` briefly, replacing whatever was there. Cancelling the
+    /// previous timer matters: two teleports in a row would otherwise have the
+    /// first one's timer clear the second one's message early.
+    func flash(_ message: String) {
+        toastTask?.cancel()
+        toast = message
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.toast = nil
+        }
+    }
+
+    func dismissToast() {
+        toastTask?.cancel()
+        toast = nil
     }
 
     /// Switches the active profile, replacing the live working copy.
@@ -668,21 +693,44 @@ final class SpoofSession: ObservableObject {
 
     // MARK: - Places
 
-    func addFavorite(name: String, coordinate: CLLocationCoordinate2D) {
+    @discardableResult
+    func addFavorite(name: String, coordinate: CLLocationCoordinate2D) -> SavedPlace {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let place = SavedPlace(
             name: trimmed.isEmpty ? Self.coordinateLabel(coordinate) : trimmed,
             latitude: coordinate.latitude,
             longitude: coordinate.longitude
         )
-        // Don't let a generic star overwrite a named favorite for the same spot.
-        if let existing = favorites.first(where: { $0.id == place.id }),
-           Self.isGenericFavoriteName(place.name),
-           !Self.isGenericFavoriteName(existing.name) {
-            return
+
+        // Matching on coordinate rather than id: ids are unique now, so
+        // "already starred this spot" is a question about where it is.
+        if let existing = favorites.first(where: { $0.isAt(coordinate) }) {
+            // Don't let a generic star overwrite a named favourite for the same spot.
+            if Self.isGenericFavoriteName(place.name), !Self.isGenericFavoriteName(existing.name) {
+                return existing
+            }
+            favorites.removeAll { $0.isAt(coordinate) }
         }
-        favorites.removeAll { $0.id == place.id }
+
         favorites.insert(place, at: 0)
+        SavedPlace.save(favorites, key: favoritesKey)
+        return place
+    }
+
+    /// True when this spot is already starred — so the map can show a filled
+    /// star instead of offering to save it twice.
+    func isFavorite(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        favorites.contains { $0.isAt(coordinate) }
+    }
+
+    func removeFavorite(at coordinate: CLLocationCoordinate2D) {
+        favorites.removeAll { $0.isAt(coordinate) }
+        SavedPlace.save(favorites, key: favoritesKey)
+    }
+
+    /// Favourites are an ordered list people curate; the order should be theirs.
+    func moveFavorites(from offsets: IndexSet, to destination: Int) {
+        favorites.move(fromOffsets: offsets, toOffset: destination)
         SavedPlace.save(favorites, key: favoritesKey)
     }
 
@@ -714,13 +762,12 @@ final class SpoofSession: ObservableObject {
         if let address = places.address(for: coordinate) {
             return address
         }
-        if let favorite = favorites.first(where: { $0.id == SavedPlace(name: "", latitude: coordinate.latitude, longitude: coordinate.longitude).id }),
+        if let favorite = favorites.first(where: { $0.isAt(coordinate) }),
            !Self.isGenericFavoriteName(favorite.name) {
             return favorite.name
         }
-        if let recent = recents.first(where: {
-            abs($0.latitude - coordinate.latitude) < 0.00015 && abs($0.longitude - coordinate.longitude) < 0.00015
-        }), !Self.isGenericFavoriteName(recent.name) {
+        if let recent = recents.first(where: { $0.isAt(coordinate) }),
+           !Self.isGenericFavoriteName(recent.name) {
             return recent.name
         }
         return Self.coordinateLabel(coordinate)
@@ -769,6 +816,11 @@ final class SpoofSession: ObservableObject {
             startHealth(pairing: pairing)
             if markRecent {
                 pushRecent(coordinate)
+                // Only for a deliberate teleport: the health timer and the route
+                // walker both come through here, and buzzing once a second for
+                // an hour is not confirmation, it's a fault.
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                flash("Now at \(suggestedFavoriteName(for: coordinate))")
             }
         case .failure(let error):
             lastError = error.localizedDescription
@@ -826,22 +878,28 @@ final class SpoofSession: ObservableObject {
     }
 
     private func pushRecent(_ coordinate: CLLocationCoordinate2D) {
-        pushNamedRecent(
-            name: Self.coordinateLabel(coordinate),
-            coordinate: coordinate
-        )
+        // The best name there is for this spot, not its latitude. Teleporting
+        // to somewhere you had searched for by name used to rewrite that recent
+        // as "48.85837, 2.29448".
+        pushNamedRecent(name: suggestedFavoriteName(for: coordinate), coordinate: coordinate)
     }
 
     func pushNamedRecent(name: String, coordinate: CLLocationCoordinate2D) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var label = trimmed.isEmpty ? Self.coordinateLabel(coordinate) : trimmed
+        // A coordinate label never wins against a name this spot already had.
+        if Self.isGenericFavoriteName(label),
+           let existing = recents.first(where: { $0.isAt(coordinate) }),
+           !Self.isGenericFavoriteName(existing.name) {
+            label = existing.name
+        }
+
         let place = SavedPlace(
-            name: trimmed.isEmpty ? Self.coordinateLabel(coordinate) : trimmed,
+            name: label,
             latitude: coordinate.latitude,
             longitude: coordinate.longitude
         )
-        recents.removeAll {
-            abs($0.latitude - place.latitude) < 0.00015 && abs($0.longitude - place.longitude) < 0.00015
-        }
+        recents.removeAll { $0.isAt(coordinate) }
         recents.insert(place, at: 0)
         if recents.count > 20 { recents = Array(recents.prefix(20)) }
         SavedPlace.save(recents, key: recentsKey)

@@ -550,6 +550,10 @@ struct PlacesView: View {
                                 .tint(.gray)
                             }
                     }
+                    // Favourites are a list people curate, and the useful ones
+                    // are the ones you reach for — which is not the order you
+                    // happened to save them in.
+                    .onMove { session.moveFavorites(from: $0, to: $1) }
                 }
 
                 Section("Recents") {
@@ -573,6 +577,11 @@ struct PlacesView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
+                }
+                if !session.favorites.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        EditButton()
+                    }
                 }
             }
             .alert("Rename Favorite", isPresented: Binding(

@@ -1,5 +1,6 @@
 import CoreLocation
 import SwiftUI
+import UIKit
 
 enum LocusTheme {
     static let accent = Color(red: 0.35, green: 0.78, blue: 0.72)
@@ -217,10 +218,23 @@ struct GlassIconButton: View {
     var tint: Color?
     var isOn: Bool = false
     var accessibilityLabel: String?
+    /// A second action on a long press. Optional, and when it is nil the button
+    /// behaves exactly as it did before — no gesture is attached at all.
+    var onLongPress: (() -> Void)?
     let action: () -> Void
 
+    /// A long press still ends in a tap as far as the button is concerned, so
+    /// the tap action has to know one just fired and stand down.
+    @State private var longPressFired = false
+
     var body: some View {
-        Button(action: action) {
+        Button {
+            if longPressFired {
+                longPressFired = false
+                return
+            }
+            action()
+        } label: {
             Image(systemName: systemName)
                 .font(.body.weight(.semibold))
                 .frame(width: LocusMetrics.controlSide, height: LocusMetrics.controlSide)
@@ -230,5 +244,28 @@ struct GlassIconButton: View {
         .foregroundStyle(isOn ? (tint ?? LocusTheme.accent) : .primary)
         .locusGlass(.interactive, tint: isOn ? (tint ?? LocusTheme.accent).opacity(0.35) : nil, in: Circle())
         .accessibilityLabel(accessibilityLabel ?? systemName)
+        .modifier(LongPressAction(action: onLongPress, fired: $longPressFired))
+    }
+}
+
+/// Attaches a long-press alternative to a button, with the haptic that tells
+/// you it fired — a gesture with no visible control has no other feedback.
+private struct LongPressAction: ViewModifier {
+    var action: (() -> Void)?
+    @Binding var fired: Bool
+
+    func body(content: Content) -> some View {
+        if let action {
+            content
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                        fired = true
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        action()
+                    }
+                )
+        } else {
+            content
+        }
     }
 }

@@ -37,6 +37,13 @@ struct RootView: View {
                             .transition(.scale(scale: 0.85).combined(with: .opacity))
                     }
 
+                    if let toast = session.toast {
+                        ToastPill(message: toast)
+                            .locusGlassID("toast", in: bottomGlass)
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                            .onTapGesture { session.dismissToast() }
+                    }
+
                     BottomControlsView(
                         showSettings: $showSettings,
                         showPlaces: $showPlaces
@@ -48,6 +55,7 @@ struct RootView: View {
             .padding(.bottom, 8)
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: session.telemetry == nil)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.routeCountdown)
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.toast)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -70,6 +78,29 @@ struct RootView: View {
         } message: {
             Text(session.lastError ?? "")
         }
+    }
+}
+
+/// The quiet counterpart to the error alert: something worked, here is what.
+/// Tapping it dismisses it early, because a confirmation you have already read
+/// is just something in the way.
+struct ToastPill: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(LocusTheme.statusGood)
+            Text(message)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .locusGlass(.clear, in: Capsule())
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
     }
 }
 

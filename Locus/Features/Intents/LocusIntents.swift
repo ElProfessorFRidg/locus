@@ -21,7 +21,7 @@ struct FavoritePlaceEntity: AppEntity {
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Saved place"
     static var defaultQuery = FavoritePlaceQuery()
 
-    var id: String
+    var id: UUID
     var name: String
     var latitude: Double
     var longitude: Double
@@ -46,7 +46,7 @@ struct FavoritePlaceEntity: AppEntity {
 }
 
 struct FavoritePlaceQuery: EntityQuery {
-    func entities(for identifiers: [String]) async throws -> [FavoritePlaceEntity] {
+    func entities(for identifiers: [UUID]) async throws -> [FavoritePlaceEntity] {
         await MainActor.run { Self.all().filter { identifiers.contains($0.id) } }
     }
 
@@ -60,10 +60,15 @@ struct FavoritePlaceQuery: EntityQuery {
     @MainActor
     private static func all() -> [FavoritePlaceEntity] {
         let session = SpoofSession.shared
-        var seen = Set<String>()
-        return (session.favorites + session.recents)
-            .filter { seen.insert($0.id).inserted }
-            .map(FavoritePlaceEntity.init)
+        // Deduplicated by position, not by id: a place that is both starred and
+        // recently visited is two entries with two ids and one location, and
+        // Siri offering it twice under the same name is unusable.
+        var kept: [SavedPlace] = []
+        for place in session.favorites + session.recents
+        where !kept.contains(where: { $0.isAt(place.coordinate) }) {
+            kept.append(place)
+        }
+        return kept.map(FavoritePlaceEntity.init)
     }
 }
 
