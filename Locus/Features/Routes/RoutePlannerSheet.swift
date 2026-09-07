@@ -505,7 +505,7 @@ struct RoutePlannerSheet: View {
             case .travelMode: return session.travelMode.baseSpeed
             case .roadLimit:
                 let observed = route.expectedSpeed ?? session.travelMode.baseSpeed
-                return observed * (1 + profile.speedTolerance)
+                return observed * (1 + profile.speedToleranceClamped)
             case .recorded:
                 // The recording's own average is exactly this estimate, and it
                 // is the one number here that isn't a guess.

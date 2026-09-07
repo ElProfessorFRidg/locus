@@ -281,3 +281,60 @@ final class DrivingTests: XCTestCase {
 private enum DriveTelemetryStub {
     static func make() -> DriveTelemetry { DriveTelemetry() }
 }
+
+/// The stored profile is not the slider.
+///
+/// Sliders bound these values; the file on disk does not. A profile written by
+/// another build, restored from a backup, or hand-edited comes back as whatever
+/// it says — and the engine consumed some of them raw.
+final class DriveProfileClampTests: XCTestCase {
+    private func profile(tolerance: Double = 0.10, scale: Double = 1) -> DriveProfile {
+        var p = DriveProfile()
+        p.speedTolerance = tolerance
+        p.timeScale = scale
+        return p
+    }
+
+    func testOrdinaryValuesPassThroughUntouched() {
+        let p = profile(tolerance: 0.10, scale: 4)
+        XCTAssertEqual(p.speedToleranceClamped, 0.10, accuracy: 1e-9)
+        XCTAssertEqual(p.timeScaleClamped, 4, accuracy: 1e-9)
+    }
+
+    func testNegativeToleranceIsAllowedButKeptAboveMinusOne() {
+        // Driving under the limit is a real setting — the "Careful" starter
+        // profile ships at −5%.
+        XCTAssertEqual(profile(tolerance: -0.05).speedToleranceClamped, -0.05, accuracy: 1e-9)
+        XCTAssertEqual(profile(tolerance: -0.30).speedToleranceClamped, -0.30, accuracy: 1e-9)
+    }
+
+    /// The planner computes its ceiling as `limit * (1 + tolerance)`. Below −1
+    /// that is a negative target speed, which is not a slow car — it is a car
+    /// the model cannot describe.
+    func testToleranceBelowMinusOneCannotProduceANegativeCeiling() {
+        for stored in [-1.0, -1.5, -40.0, -.greatestFiniteMagnitude] {
+            let tolerance = profile(tolerance: stored).speedToleranceClamped
+            XCTAssertGreaterThan(1 + tolerance, 0, "stored \(stored) still yields a positive ceiling")
+        }
+    }
+
+    func testAbsurdToleranceIsCappedRatherThanTrusted() {
+        XCTAssertEqual(profile(tolerance: 50).speedToleranceClamped, 2.0, accuracy: 1e-9)
+        XCTAssertEqual(profile(tolerance: .infinity).speedToleranceClamped, 2.0, accuracy: 1e-9)
+    }
+
+    /// A zero or negative time scale divides the ETA by zero and stalls the
+    /// walker; the ceiling keeps a corrupted file from asking for 10000×.
+    func testTimeScaleIsHeldInsideTheRangeThePlaybackOffers() {
+        XCTAssertEqual(profile(scale: 0).timeScaleClamped, 0.05, accuracy: 1e-9)
+        XCTAssertEqual(profile(scale: -3).timeScaleClamped, 0.05, accuracy: 1e-9)
+        XCTAssertEqual(profile(scale: 10_000).timeScaleClamped, 8.0, accuracy: 1e-9)
+        XCTAssertGreaterThan(profile(scale: 0).timeScaleClamped, 0)
+    }
+
+    func testEveryScaleTheUIOffersSurvivesUnchanged() {
+        for scale in [0.5, 1.0, 2.0, 4.0, 8.0] {
+            XCTAssertEqual(profile(scale: scale).timeScaleClamped, scale, accuracy: 1e-9, "\(scale)×")
+        }
+    }
+}

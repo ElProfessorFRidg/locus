@@ -370,6 +370,22 @@ struct DriveProfile: Codable, Equatable, Identifiable {
     var accelerationClamped: Double { acceleration.clamped(to: 0.4...8.0) }
     var brakingClamped: Double { braking.clamped(to: 0.8...9.0) }
 
+    /// The "limit +10%" dial, kept inside the range the maths survives.
+    ///
+    /// The slider bounds this to −30%…+50%; the stored file does not. A profile
+    /// written by another build, or hand-edited, comes back as whatever it
+    /// says — and the planner computes its ceiling as `limit * (1 + tolerance)`,
+    /// so anything below −1 makes the car's target speed **negative**. The
+    /// bounds here are far wider than the slider on purpose: a deliberate
+    /// extreme is somebody's choice, a negative speed is nobody's.
+    var speedToleranceClamped: Double { speedTolerance.clamped(to: -0.9...2.0) }
+
+    /// Playback speed, likewise. `SpoofSession` and `DriveFormat.eta` each
+    /// carried their own `max(0.05, …)` for the low end and nothing for the
+    /// high one — which is how one of two copies of a magic number eventually
+    /// stops matching the other.
+    var timeScaleClamped: Double { timeScale.clamped(to: 0.05...8.0) }
+
     var fixedSpeedMetresPerSecond: CLLocationSpeed {
         units.toMetresPerSecond(fixedSpeed)
     }

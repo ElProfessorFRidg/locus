@@ -36,7 +36,7 @@ struct DriveHUDView: View {
     /// tolerance they set. Shown under the sign so "+10%" is not invisible.
     private var toleratedValue: Int? {
         guard let limit = telemetry.speedLimit, profile.speedTolerance != 0 else { return nil }
-        return Int(unit.fromMetresPerSecond(limit * (1 + profile.speedTolerance)).rounded())
+        return Int(unit.fromMetresPerSecond(limit * (1 + profile.speedToleranceClamped)).rounded())
     }
 
     private var speedColor: Color {

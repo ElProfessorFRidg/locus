@@ -302,7 +302,7 @@ enum RouteSimulator {
 
         let lateral = profile.cornering.lateralAcceleration
         let ceilingCap = profile.ceilingMetresPerSecond
-        let tolerance = usesLimits ? (1 + profile.speedTolerance) : 1
+        let tolerance = usesLimits ? (1 + profile.speedToleranceClamped) : 1
 
         // Stops are chosen in their own pass. Rolling the dice per sampled point
         // would fire several times across one junction — the turn spans half a
@@ -849,7 +849,7 @@ final class DriveWalker {
         let limit: CLLocationSpeed? = plan.usesEstimatedLimits ? point.limit : nil
         let over: Bool = {
             guard let limit, limit > 0 else { return false }
-            return speed > limit * (1 + max(0, profile.speedTolerance)) + 0.3
+            return speed > limit * (1 + max(0, profile.speedToleranceClamped)) + 0.3
         }()
 
         return DriveFix(

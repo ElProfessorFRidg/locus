@@ -633,7 +633,7 @@ final class SpoofSession: ObservableObject {
                 // watching a drive, and it used to do nothing until the route
                 // was restarted. Everything else is baked into the plan and
                 // can't change under a walker mid-route, so it stays snapshotted.
-                let scale = max(0.05, drive.timeScale)
+                let scale = drive.timeScaleClamped
 
                 await apply(fix.coordinate, pairing: pairing, markRecent: false)
                 telemetry = DriveTelemetry(
