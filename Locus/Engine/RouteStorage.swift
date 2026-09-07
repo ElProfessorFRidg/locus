@@ -55,6 +55,12 @@ struct SavedRoute: Codable, Identifiable, Equatable {
     var distance: CLLocationDistance
     /// Apple's estimate, kept because it is what the limit estimator scales off.
     var expectedTravelTime: TimeInterval
+    /// Timestamps from the GPX this came from, one per coordinate.
+    ///
+    /// Saving used to drop these, which meant "As recorded" — the whole point
+    /// of importing a track with timing — silently stopped working the moment
+    /// you kept the route for tomorrow.
+    var recordedTimes: [Date]?
     var overrides: [LimitOverride] = []
     var createdAt = Date()
 
@@ -67,7 +73,22 @@ struct SavedRoute: Codable, Identifiable, Equatable {
         coordinates = route.coordinates.codable
         distance = route.distance
         expectedTravelTime = route.expectedTravelTime
+        recordedTimes = route.recordedTimes
         self.overrides = overrides
+    }
+
+    /// Routes saved before this field existed have no key for it; decoding it
+    /// leniently keeps them rather than throwing the whole list away.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
+        name = (try? container.decode(String.self, forKey: .name)) ?? "Route"
+        coordinates = try container.decode([Coordinate2D].self, forKey: .coordinates)
+        distance = (try? container.decode(CLLocationDistance.self, forKey: .distance)) ?? 0
+        expectedTravelTime = (try? container.decode(TimeInterval.self, forKey: .expectedTravelTime)) ?? 0
+        recordedTimes = try? container.decodeIfPresent([Date].self, forKey: .recordedTimes)
+        overrides = (try? container.decode([LimitOverride].self, forKey: .overrides)) ?? []
+        createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? Date()
     }
 
     var built: BuiltRoute {
@@ -75,7 +96,10 @@ struct SavedRoute: Codable, Identifiable, Equatable {
             name: name,
             coordinates: coordinates.clLocations,
             distance: distance,
-            expectedTravelTime: expectedTravelTime
+            expectedTravelTime: expectedTravelTime,
+            // Only when there is one per point: a pace mapped onto the wrong
+            // places is worse than no pace at all.
+            recordedTimes: recordedTimes?.count == coordinates.count ? recordedTimes : nil
         )
     }
 }
@@ -86,6 +110,9 @@ struct RouteResumeState: Codable, Equatable {
     var coordinates: [Coordinate2D]
     var expectedTravelTime: TimeInterval
     var distance: CLLocationDistance
+    /// Carried for the same reason `SavedRoute` carries it: a drive replaying a
+    /// recorded pace should come back replaying that pace, not a generic one.
+    var recordedTimes: [Date]?
     var overrides: [LimitOverride]
     /// How far along the drive had got, in metres.
     var travelled: CLLocationDistance
@@ -107,7 +134,8 @@ struct RouteResumeState: Codable, Equatable {
             name: routeName,
             coordinates: coordinates.clLocations,
             distance: distance,
-            expectedTravelTime: expectedTravelTime
+            expectedTravelTime: expectedTravelTime,
+            recordedTimes: recordedTimes?.count == coordinates.count ? recordedTimes : nil
         )
     }
 }

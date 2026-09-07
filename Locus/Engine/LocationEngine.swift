@@ -58,22 +58,35 @@ enum LocationEngine {
 
     static var isSessionActive: Bool { locationSimulation != nil }
 
-    static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) -> Result<Void, LocationEngineError> {
-        var result: Result<Void, LocationEngineError> = .failure(.locationSet)
-        queue.sync {
-            let code = setLocked(latitude: latitude, longitude: longitude, pairingPath: pairingPath, deviceIP: deviceIP)
-            result = code == ok ? .success(()) : .failure(.from(code: code))
+    /// Sends a coordinate to the device.
+    ///
+    /// Async, and that is the point. This is a network round trip over the
+    /// tunnel — and the *first* call is the whole handshake: pairing file,
+    /// tunnel, RemoteXPC, the simulation service. It used to run under
+    /// `queue.sync` from a `@MainActor` caller, so every fix blocked the main
+    /// thread for the length of that round trip, up to four times a second
+    /// while a route played, and the first teleport froze the UI for as long as
+    /// the handshake took. Hopping onto the queue and suspending instead leaves
+    /// the main thread free to draw the map it is being asked to move.
+    ///
+    /// The serial queue still serialises the FFI, so the C-side session state is
+    /// touched by exactly one caller at a time, exactly as before.
+    static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) async -> Result<Void, LocationEngineError> {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let code = setLocked(latitude: latitude, longitude: longitude, pairingPath: pairingPath, deviceIP: deviceIP)
+                continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
+            }
         }
-        return result
     }
 
-    static func clear() -> Result<Void, LocationEngineError> {
-        var result: Result<Void, LocationEngineError> = .failure(.notActive)
-        queue.sync {
-            let code = clearLocked()
-            result = code == ok ? .success(()) : .failure(.from(code: code))
+    static func clear() async -> Result<Void, LocationEngineError> {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let code = clearLocked()
+                continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
+            }
         }
-        return result
     }
 
     private static func cleanup() {

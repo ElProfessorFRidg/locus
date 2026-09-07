@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
@@ -16,6 +17,7 @@ struct SettingsView: View {
     @State private var showDiagnostics = false
     @State private var troubleBlocker: TunnelBlocker?
     @State private var tunnelIP = TunnelConfig.targetIP
+    @FocusState private var editingIP: Bool
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @State private var loopbackUp = TunnelController.loopbackReachable
     @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
@@ -93,6 +95,10 @@ struct SettingsView: View {
                 LocusEasterEggView()
             }
             .onAppear { refresh() }
+            // Swiping a sheet down is how sheets get dismissed; only "Done"
+            // used to save the tunnel IP, so the normal gesture threw the edit
+            // away without a word.
+            .onDisappear { saveTunnelIP() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { refresh() }
             }
@@ -359,7 +365,13 @@ struct SettingsView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.numbersAndPunctuation)
+                .focused($editingIP)
                 .onSubmit(saveTunnelIP)
+                // Tapping away from the field is as much a "that's my answer"
+                // as pressing return is.
+                .onChange(of: editingIP) { _, focused in
+                    if !focused { saveTunnelIP() }
+                }
 
             Button("Save tunnel IP", action: saveTunnelIP)
                 .disabled(!TunnelConfig.isValidIPv4(tunnelIP))
@@ -474,7 +486,10 @@ struct SettingsView: View {
     private func refresh() {
         localDevVPNInstalled = LocalDevVPN.isInstalled
         loopbackUp = TunnelController.loopbackReachable
-        tunnelIP = TunnelConfig.targetIP
+        // This runs on every return to the foreground, and a notification
+        // banner pulled down mid-edit counts as one — so it used to overwrite
+        // whatever was half-typed with the stored value.
+        if !editingIP { tunnelIP = TunnelConfig.targetIP }
     }
 }
 
@@ -484,6 +499,13 @@ struct SettingsView: View {
 struct TunnelDiagnosticsView: View {
     @StateObject private var tunnel = TunnelController.shared
     @Environment(\.dismiss) private var dismiss
+
+    /// The whole log as one string. Selecting it line by line was the only way
+    /// to get it out of here, which makes "paste your tunnel log" — the first
+    /// thing anyone asks for — a transcription job.
+    private var wholeLog: String {
+        tunnel.lastDiagnostics.joined(separator: "\n")
+    }
 
     var body: some View {
         NavigationStack {
@@ -509,7 +531,27 @@ struct TunnelDiagnosticsView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Refresh") { tunnel.refreshDiagnostics() }
+                    Menu {
+                        Button {
+                            UIPasteboard.general.string = wholeLog
+                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        } label: {
+                            Label("Copy the whole log", systemImage: "doc.on.doc")
+                        }
+                        ShareLink(item: wholeLog) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .disabled(tunnel.lastDiagnostics.isEmpty)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        tunnel.refreshDiagnostics()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
                 }
             }
             .onAppear { tunnel.refreshDiagnostics() }

@@ -804,7 +804,8 @@ struct MapHomeView: View {
             expectedSpeed: workspace.activeExpectedSpeed,
             name: workspace.selectedRoute?.name ?? "Route",
             overrides: workspace.overrides,
-            recordedSpeed: workspace.recordedSpeedSampler
+            recordedSpeed: workspace.recordedSpeedSampler,
+            recordedTimes: workspace.selectedRoute?.recordedTimes
         )
     }
 

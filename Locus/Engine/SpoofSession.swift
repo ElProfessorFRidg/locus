@@ -128,6 +128,9 @@ final class SpoofSession: ObservableObject {
         didSet {
             guard drive != oldValue else { return }
             profiles.update(drive)
+            // Covers the "keep the screen on" toggle being flipped mid-drive,
+            // and switching to a profile that answers it differently.
+            refreshIdleTimer()
         }
     }
 
@@ -199,6 +202,16 @@ final class SpoofSession: ObservableObject {
         }
     }
 
+    /// Holds the display awake while there is something moving on it.
+    ///
+    /// Called from every place that starts or ends a drive or the joystick, and
+    /// again when the profile's toggle changes — iOS resets this on its own when
+    /// the app is backgrounded, so it costs nothing to set more often than
+    /// strictly needed and everything to set it less.
+    private func refreshIdleTimer() {
+        UIApplication.shared.isIdleTimerDisabled = drive.keepScreenAwake && (isRouting || joystickActive)
+    }
+
     /// Shows `message` briefly, replacing whatever was there. Cancelling the
     /// previous timer matters: two teleports in a row would otherwise have the
     /// first one's timer clear the second one's message early.
@@ -260,17 +273,32 @@ final class SpoofSession: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             guard await self.prepareTunnel() else { return }
-            self.apply(coordinate, pairing: pairing, markRecent: true)
+            await self.apply(coordinate, pairing: pairing, markRecent: true)
         }
     }
 
+    /// Clears the simulated location.
+    ///
+    /// Kicks the work off and returns, so the Stop button doesn't sit pressed
+    /// while the engine tears the session down. `isBusy` covers the gap.
     func stop(pairing: PairingStore) {
+        Task { [weak self] in
+            await self?.stopAndWait(pairing: pairing)
+        }
+    }
+
+    /// The same, awaited. For callers that report an outcome — the Siri intent
+    /// shouldn't say "back to your real location" before it is.
+    func stopAndWait(pairing: PairingStore) async {
         cancelRoute()
         stopJoystick()
         stopResend()
         stopHealth()
         isBusy = true
-        let result = LocationEngine.clear()
+        finishStop(await LocationEngine.clear())
+    }
+
+    private func finishStop(_ result: Result<Void, LocationEngineError>) {
         isBusy = false
         switch result {
         case .success:
@@ -346,14 +374,15 @@ final class SpoofSession: ObservableObject {
             guard let self else { return }
             guard await self.prepareTunnel() else { return }
             if self.simulated == nil {
-                self.apply(start, pairing: pairing, markRecent: false)
+                await self.apply(start, pairing: pairing, markRecent: false)
             }
             self.joystickActive = true
             self.joystick = JoystickTelemetry()
+            self.refreshIdleTimer()
             self.joystickTimer?.invalidate()
             self.joystickTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in
-                    self?.tickJoystick(pairing: pairing)
+                    await self?.tickJoystick(pairing: pairing)
                 }
             }
         }
@@ -369,6 +398,7 @@ final class SpoofSession: ObservableObject {
         joystick = nil
         joystickTimer?.invalidate()
         joystickTimer = nil
+        refreshIdleTimer()
     }
 
     /// Top speed the joystick moves at. A fixed speed set for routes is an
@@ -380,7 +410,7 @@ final class SpoofSession: ObservableObject {
             : travelMode.baseSpeed
     }
 
-    private func tickJoystick(pairing: PairingStore) {
+    private func tickJoystick(pairing: PairingStore) async {
         guard joystickActive, let current = simulated else { return }
         let magnitude = hypot(joystickVector.dx, joystickVector.dy)
 
@@ -404,7 +434,7 @@ final class SpoofSession: ObservableObject {
         joystick?.course = Geo.bearing(from: current, to: next)
         joystick?.distance += meters
 
-        apply(next, pairing: pairing, markRecent: false)
+        await apply(next, pairing: pairing, markRecent: false)
     }
 
     // MARK: - Routes
@@ -421,6 +451,10 @@ final class SpoofSession: ObservableObject {
         name: String = "Route",
         overrides: [LimitOverride] = [],
         recordedSpeed: ((CLLocationDistance) -> CLLocationSpeed)? = nil,
+        // The timestamps behind `recordedSpeed`, kept only so the resume file
+        // can carry them. A closure can't be written to disk, so without this
+        // an interrupted "As recorded" drive came back at a generic pace.
+        recordedTimes: [Date]? = nil,
         startingAt startDistance: CLLocationDistance = 0
     ) {
         guard pairing.hasPairingFile else {
@@ -469,6 +503,10 @@ final class SpoofSession: ObservableObject {
         let generation = routeGeneration
 
         routeTask = Task { [weak self] in
+            // Set inside the task, after `routeTask` is assigned: `isRouting`
+            // reads that, so calling this any earlier would ask about a route
+            // that doesn't exist yet.
+            self?.refreshIdleTimer()
             guard let self else { return }
             guard await self.prepareTunnel() else {
                 self.finishRoute(generation: generation)
@@ -485,6 +523,7 @@ final class SpoofSession: ObservableObject {
                         coordinates: coordinates.codable,
                         expectedTravelTime: expectedSpeed.map { basePlan.totalDistance / max($0, 0.1) } ?? 0,
                         distance: basePlan.totalDistance,
+                        recordedTimes: recordedTimes,
                         overrides: overrides,
                         travelled: 0,
                         lap: 1,
@@ -506,6 +545,7 @@ final class SpoofSession: ObservableObject {
         LiveActivityController.shared.end()
         // A route that reached its end has nothing left to resume.
         routeStore.clearResume()
+        refreshIdleTimer()
     }
 
     func pauseRoute() { isRoutePaused = true }
@@ -536,6 +576,7 @@ final class SpoofSession: ObservableObject {
         routeCountdown = nil
         LiveActivityController.shared.end()
         if !keepResumePoint { routeStore.clearResume() }
+        refreshIdleTimer()
     }
 
     /// Picks an interrupted drive back up from where the progress file says it
@@ -545,12 +586,18 @@ final class SpoofSession: ObservableObject {
         if let profileID = state.profileID, profileID != drive.id {
             selectProfile(profileID)
         }
+        // `built` rebuilds the sampler from the stored timestamps, so a drive
+        // that was replaying a recorded pace comes back replaying it — before,
+        // resuming quietly dropped to the estimator's guess.
+        let route = state.built
         startRoute(
             state.coordinates.clLocations,
             pairing: pairing,
-            expectedSpeed: state.built.expectedSpeed,
+            expectedSpeed: route.expectedSpeed,
             name: state.routeName,
             overrides: state.overrides,
+            recordedSpeed: route.recordedSpeedSampler(),
+            recordedTimes: state.recordedTimes,
             startingAt: state.travelled
         )
     }
@@ -575,8 +622,6 @@ final class SpoofSession: ObservableObject {
         startDistance: CLLocationDistance
     ) async {
         let dt = profile.updateInterval
-        let scale = max(0.05, profile.timeScale)
-        let realInterval = UInt64((dt / scale) * 1_000_000_000)
 
         var current = plan
         var lap = 1
@@ -593,7 +638,14 @@ final class SpoofSession: ObservableObject {
                 }
                 guard !Task.isCancelled else { return }
 
-                apply(fix.coordinate, pairing: pairing, markRecent: false)
+                // Read from the live profile rather than the snapshot taken at
+                // the start: the time scale is the one dial worth moving while
+                // watching a drive, and it used to do nothing until the route
+                // was restarted. Everything else is baked into the plan and
+                // can't change under a walker mid-route, so it stays snapshotted.
+                let scale = max(0.05, drive.timeScale)
+
+                await apply(fix.coordinate, pairing: pairing, markRecent: false)
                 telemetry = DriveTelemetry(
                     speed: fix.speed,
                     speedLimit: fix.speedLimit,
@@ -616,7 +668,12 @@ final class SpoofSession: ObservableObject {
                     // Throttled inside the controller: a route emits fixes far
                     // faster than ActivityKit's update budget allows.
                     LiveActivityController.shared.update(
-                        Self.activityState(for: telemetry, profile: profile, paused: isRoutePaused)
+                        Self.activityState(
+                            for: telemetry,
+                            profile: profile,
+                            paused: isRoutePaused,
+                            timeScale: scale
+                        )
                     )
                 }
 
@@ -631,7 +688,7 @@ final class SpoofSession: ObservableObject {
                     routeStore.recordProgress(state)
                 }
 
-                try? await Task.sleep(nanoseconds: realInterval)
+                try? await Task.sleep(nanoseconds: UInt64((dt / scale) * 1_000_000_000))
             }
 
             guard !Task.isCancelled else { return }
@@ -663,10 +720,15 @@ final class SpoofSession: ObservableObject {
     /// giving it `DriveProfile` and `SpeedUnit` just to render "48 km/h" would
     /// drag half the engine over a target boundary and split unit handling in
     /// two.
+    /// - Parameter timeScale: the scale in force right now, which is not
+    ///   necessarily the one `profile` was snapshotted with — the dial moves
+    ///   mid-drive, and an ETA computed at the old scale would be wrong on the
+    ///   Lock Screen while the HUD showed the right one.
     private static func activityState(
         for telemetry: DriveTelemetry,
         profile: DriveProfile,
-        paused: Bool
+        paused: Bool,
+        timeScale: Double? = nil
     ) -> DriveActivityAttributes.ContentState {
         let unit = profile.units
         return DriveActivityAttributes.ContentState(
@@ -675,7 +737,7 @@ final class SpoofSession: ObservableObject {
             limit: telemetry.speedLimit.map { "\(Int(unit.fromMetresPerSecond($0).rounded()))" },
             progress: telemetry.progress,
             remaining: DriveFormat.distance(telemetry.distanceRemaining) + " left",
-            eta: DriveFormat.eta(telemetry: telemetry, timeScale: profile.timeScale),
+            eta: DriveFormat.eta(telemetry: telemetry, timeScale: timeScale ?? profile.timeScale),
             isPaused: paused,
             isStopped: telemetry.isStopped,
             isOverLimit: telemetry.isOverLimit && profile.warnWhenOverLimit
@@ -792,12 +854,17 @@ final class SpoofSession: ObservableObject {
 
     // MARK: - Engine
 
-    private func apply(_ coordinate: CLLocationCoordinate2D, pairing: PairingStore, markRecent: Bool) {
+    /// Sends one fix and folds the outcome back into the session's state.
+    ///
+    /// The suspension is the whole point: the engine call is a round trip over
+    /// the tunnel, and it used to run synchronously from the main actor — so
+    /// the map froze for its duration on every fix.
+    private func apply(_ coordinate: CLLocationCoordinate2D, pairing: PairingStore, markRecent: Bool) async {
         if status == .idle || status.isDropped {
             status = .connecting
         }
         isBusy = true
-        let result = LocationEngine.set(
+        let result = await LocationEngine.set(
             latitude: coordinate.latitude,
             longitude: coordinate.longitude,
             pairingPath: pairing.pairingPath,
@@ -814,6 +881,8 @@ final class SpoofSession: ObservableObject {
             locationKeeper.start()
             startResend(pairing: pairing)
             startHealth(pairing: pairing)
+            // Ask now, while it is working, rather than at the moment it breaks.
+            requestDropAlertsIfNeeded()
             if markRecent {
                 pushRecent(coordinate)
                 // Only for a deliberate teleport: the health timer and the route
@@ -841,7 +910,7 @@ final class SpoofSession: ObservableObject {
                 // A route re-sends far more often than this on its own; resending
                 // underneath it would fight the walker for the current fix.
                 guard !self.isRouting else { return }
-                _ = LocationEngine.set(
+                _ = await LocationEngine.set(
                     latitude: sim.latitude,
                     longitude: sim.longitude,
                     pairingPath: pairing.pairingPath,
@@ -863,10 +932,10 @@ final class SpoofSession: ObservableObject {
                 guard let self, let sim = self.simulated else { return }
                 if case .dropped = self.status {
                     self.status = .reconnecting
-                    self.apply(sim, pairing: pairing, markRecent: false)
+                    await self.apply(sim, pairing: pairing, markRecent: false)
                 } else if !LocationEngine.isSessionActive, self.isSpoofing {
                     self.status = .reconnecting
-                    self.apply(sim, pairing: pairing, markRecent: false)
+                    await self.apply(sim, pairing: pairing, markRecent: false)
                 }
             }
         }
@@ -918,13 +987,43 @@ final class SpoofSession: ObservableObject {
         backgroundTask = .invalid
     }
 
-    private func postDropNotification(_ message: String) {
+    /// Asks for notification permission once, while something is working.
+    ///
+    /// It used to be requested at the moment of a drop, with the alert posted
+    /// immediately after and without waiting for an answer — so the very first
+    /// drop, the one that teaches you the feature exists, was always silent.
+    /// Asking here means the prompt arrives with context ("this app just
+    /// started spoofing") and the alert lands the first time it is needed.
+    private static var hasAskedAboutNotifications = false
+
+    private func requestDropAlertsIfNeeded() {
+        guard !Self.hasAskedAboutNotifications else { return }
+        Self.hasAskedAboutNotifications = true
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    private func postDropNotification(_ message: String) {
         let content = UNMutableNotificationContent()
         content.title = "Locus spoof dropped"
         content.body = message
         content.sound = .default
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                center.add(request)
+            case .notDetermined:
+                // Belt and braces: if the ask above never happened, do it now
+                // and post only once there is an answer.
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted { center.add(request) }
+                }
+            default:
+                // Denied. The status bar and the in-app alert still say so.
+                break
+            }
+        }
     }
 }

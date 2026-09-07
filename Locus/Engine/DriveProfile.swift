@@ -350,6 +350,15 @@ struct DriveProfile: Codable, Equatable, Identifiable {
     /// Colour the HUD red past the limit + tolerance.
     var warnWhenOverLimit: Bool = true
 
+    /// Hold the display awake while a route or the joystick is running.
+    ///
+    /// A route is forty minutes of a moving map and the phone locked after
+    /// thirty seconds of it. The drive itself survived — background keep-alive
+    /// sees to that — but the HUD and the map went dark, and unlocking to check
+    /// on it was the only way back. On by default, and a toggle because holding
+    /// the screen on for an hour is a real cost to anyone who doesn't want it.
+    var keepScreenAwake: Bool = true
+
     /// L/100 km, used only for the trip readout.
     var consumption: Double = 6.8
 
@@ -480,6 +489,7 @@ struct DriveProfile: Codable, Equatable, Identifiable {
         showLiveActivity = value(.showLiveActivity, fallback.showLiveActivity)
         hapticOnLimitChange = value(.hapticOnLimitChange, fallback.hapticOnLimitChange)
         warnWhenOverLimit = value(.warnWhenOverLimit, fallback.warnWhenOverLimit)
+        keepScreenAwake = value(.keepScreenAwake, fallback.keepScreenAwake)
         consumption = value(.consumption, fallback.consumption)
         showTripEconomy = value(.showTripEconomy, fallback.showTripEconomy)
     }

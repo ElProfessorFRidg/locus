@@ -501,6 +501,7 @@ struct DriveSettingsView: View {
             Toggle("Lock Screen Live Activity", isOn: $profile.showLiveActivity)
             Toggle("Warn when over the limit", isOn: $profile.warnWhenOverLimit)
             Toggle("Haptic when speeding", isOn: $profile.hapticOnLimitChange)
+            Toggle("Keep the screen on while driving", isOn: $profile.keepScreenAwake)
             Toggle("Trip fuel & CO₂", isOn: $profile.showTripEconomy)
             if profile.showTripEconomy {
                 sliderRow(

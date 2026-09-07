@@ -154,7 +154,12 @@ struct StopSpoofingIntent: AppIntent {
         guard session.isSpoofing || session.isRouting else {
             return .result(dialog: "Locus wasn’t spoofing.")
         }
-        session.stop(pairing: PairingStore.shared)
+        // Awaited: the dialog is a claim about what happened, so it has to wait
+        // for the engine rather than for the task that will one day call it.
+        await session.stopAndWait(pairing: PairingStore.shared)
+        if let error = session.lastError {
+            return .result(dialog: "Locus couldn’t stop: \(error)")
+        }
         return .result(dialog: "Back to your real location.")
     }
 }

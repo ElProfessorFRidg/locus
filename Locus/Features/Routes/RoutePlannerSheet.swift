@@ -16,6 +16,9 @@ struct RoutePlannerSheet: View {
     @State private var showDriveSettings = false
     @State private var saving = false
     @State private var draftName = ""
+    /// Non-nil while a saved route is being renamed.
+    @State private var renamingRouteID: UUID?
+    @State private var renameText = ""
 
     var body: some View {
         NavigationStack {
@@ -54,12 +57,18 @@ struct RoutePlannerSheet: View {
             endpointRow(
                 title: "Start",
                 coordinate: workspace.start,
-                placeholder: session.simulated == nil ? "Current pin" : "Where you are now"
+                placeholder: session.simulated == nil ? "Current pin" : "Where you are now",
+                source: session.simulated ?? session.pin
             ) {
                 workspace.start = session.simulated ?? session.pin
             }
 
-            endpointRow(title: "End", coordinate: workspace.end, placeholder: "Drop a pin") {
+            endpointRow(
+                title: "End",
+                coordinate: workspace.end,
+                placeholder: "Drop a pin",
+                source: session.pin
+            ) {
                 workspace.end = session.pin
             }
 
@@ -97,23 +106,38 @@ struct RoutePlannerSheet: View {
         }
     }
 
+    /// - Parameter source: what "Use pin" would copy in. Nil means there is
+    ///   nothing to copy, and the button says so instead of silently writing
+    ///   `nil` over the endpoint — which looked exactly like a dead button.
     private func endpointRow(
         title: String,
         coordinate: CLLocationCoordinate2D?,
         placeholder: String,
+        source: CLLocationCoordinate2D?,
         set: @escaping () -> Void
     ) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                Text(coordinate.map(Self.coordinateText) ?? placeholder)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(coordinate == nil ? .tertiary : .secondary)
+                // The address when one has been resolved for this spot: "Rue de
+                // Rivoli" tells you whether the endpoint is right, and
+                // "48.85837, 2.29448" does not.
+                if let coordinate, let address = session.places.address(for: coordinate) {
+                    Text(address)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(coordinate.map(Self.coordinateText) ?? placeholder)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(coordinate == nil ? .tertiary : .secondary)
+                }
             }
             Spacer()
             Button("Use pin", action: set)
                 .buttonStyle(.borderless)
                 .font(.subheadline.weight(.semibold))
+                .disabled(source == nil)
         }
     }
 
@@ -376,6 +400,16 @@ struct RoutePlannerSheet: View {
                     } label: {
                         Label("Delete", systemImage: "trash.fill")
                     }
+                    // Profiles could be renamed and routes couldn't, so a
+                    // commute saved as "Route" stayed "Route" — or had to be
+                    // deleted and rebuilt to get a name that meant something.
+                    Button {
+                        renamingRouteID = saved.id
+                        renameText = saved.name
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    .tint(.gray)
                 }
             }
         } header: {
@@ -393,10 +427,26 @@ struct RoutePlannerSheet: View {
                 session.routeStore.save(route, named: draftName, overrides: workspace.overrides)
             }
         }
+        .alert("Rename route", isPresented: Binding(
+            get: { renamingRouteID != nil },
+            set: { if !$0 { renamingRouteID = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renamingRouteID = nil }
+            Button("Save") {
+                if let id = renamingRouteID {
+                    session.routeStore.rename(id, to: renameText)
+                }
+                renamingRouteID = nil
+            }
+        }
     }
 
     private func savedSubtitle(_ saved: SavedRoute) -> String {
         var parts = [DriveFormat.distance(saved.distance)]
+        if saved.recordedTimes != nil {
+            parts.append("recorded pace")
+        }
         if !saved.overrides.isEmpty {
             parts.append("\(saved.overrides.count) correction\(saved.overrides.count == 1 ? "" : "s")")
         }
