@@ -374,6 +374,38 @@ final class DriveProfileClampTests: XCTestCase {
         }
     }
 
+    /// The car sits at a stop for exactly as long as this says, so a stored
+    /// value in the millions is a drive that never ends. Its controls stop at
+    /// 120 seconds; the ceiling is well past that and still finite.
+    func testWaitingTimesCannotParkTheCarForever() {
+        XCTAssertEqual(
+            ClosedRangeBox(lower: 0, upper: 9_999_999).range.upperBound,
+            ClosedRangeBox.secondsCeiling,
+            accuracy: 1e-9
+        )
+        XCTAssertLessThanOrEqual(ClosedRangeBox(lower: 1e9, upper: 1e9).randomValue(), ClosedRangeBox.secondsCeiling)
+
+        var p = DriveProfile()
+        p.waypointDwellSeconds = 1e9
+        XCTAssertEqual(p.waypointDwellClamped, ClosedRangeBox.secondsCeiling, accuracy: 1e-9)
+    }
+
+    func testWaitingTimesTheControlsOfferSurviveUnchanged() {
+        let box = ClosedRangeBox(lower: 4, upper: 22)
+        XCTAssertEqual(box.range.lowerBound, 4, accuracy: 1e-9)
+        XCTAssertEqual(box.range.upperBound, 22, accuracy: 1e-9)
+
+        var p = DriveProfile()
+        p.waypointDwellSeconds = 120
+        XCTAssertEqual(p.waypointDwellClamped, 120, accuracy: 1e-9)
+    }
+
+    /// A negative wait is not a wait.
+    func testNegativeWaitsBecomeNoWait() {
+        XCTAssertEqual(ClosedRangeBox(lower: -50, upper: -5).range.upperBound, 0, accuracy: 1e-9)
+        XCTAssertEqual(ClosedRangeBox(lower: -50, upper: -5).randomValue(), 0, accuracy: 1e-9)
+    }
+
     func testAnAbsurdStoredCeilingIsCapped() {
         var p = DriveProfile()
         p.units = .kph

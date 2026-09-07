@@ -565,7 +565,7 @@ enum RouteSimulator {
             // sharp corner is a junction you might be held at.
             if wantsWaypointDwell, turn >= 55 {
                 stops[index] = true
-                dwells[index] = profile.waypointDwellSeconds
+                dwells[index] = profile.waypointDwellClamped
                 lastStop = here
                 continue
             }

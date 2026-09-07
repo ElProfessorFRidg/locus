@@ -402,6 +402,13 @@ struct DriveProfile: Codable, Equatable, Identifiable {
         units.toMetresPerSecond(speedCeiling.clamped(to: 10...400))
     }
 
+    /// How long to sit at a waypoint, held to the same ceiling as a junction
+    /// stop — and for the same reason: the car waits exactly as long as this
+    /// says, so a stored value in the millions is a drive that never ends.
+    var waypointDwellClamped: TimeInterval {
+        waypointDwellSeconds.clamped(to: 0...ClosedRangeBox.secondsCeiling)
+    }
+
     var updateInterval: TimeInterval {
         1.0 / updateRateHz.clamped(to: 0.25...5.0)
     }
@@ -527,11 +534,21 @@ struct ClosedRangeBox: Codable, Equatable {
     var lower: Double
     var upper: Double
 
+    /// The longest this type is ever asked to represent.
+    ///
+    /// Its only use is how long the car sits at a junction, and its controls
+    /// stop at 120 seconds. A stored value past that parks the car for as long
+    /// as it says — a drive that never reaches its end, which reads as a hang
+    /// rather than as a very patient setting.
+    static let secondsCeiling: Double = 600
+
     var range: ClosedRange<Double> {
         // Both bounds against both, not `max(low, upper)`: with the bounds the
         // wrong way round that reduces to `upper`, so 90…10 collapsed to 10…10
         // and every junction waited exactly the same time instead of varying.
-        min(lower, upper)...max(lower, upper)
+        let low = min(lower, upper).clamped(to: 0...Self.secondsCeiling)
+        let high = max(lower, upper).clamped(to: 0...Self.secondsCeiling)
+        return low...high
     }
 
     func randomValue() -> Double {
