@@ -21,10 +21,15 @@ final class DriveProfileStore: ObservableObject {
 
     init() {
         let stored = Self.loadProfiles()
-        profiles = stored.isEmpty ? [Self.migratedOrDefault()] : stored
-
+        let resolved = stored.isEmpty ? [Self.migratedOrDefault()] : stored
         let savedID = UserDefaults.standard.string(forKey: Keys.activeID).flatMap(UUID.init(uuidString:))
-        activeID = profiles.first(where: { $0.id == savedID })?.id ?? profiles[0].id
+
+        // Both are computed from `resolved` rather than from `profiles`: reading
+        // a @Published property goes through its wrapper, which counts as using
+        // `self` — not allowed until every stored property is initialised, and
+        // `activeID` has no default to fall back on.
+        activeID = resolved.first { $0.id == savedID }?.id ?? resolved[0].id
+        profiles = resolved
 
         if stored.isEmpty { persist() }
     }
