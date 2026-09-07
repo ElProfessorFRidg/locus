@@ -164,7 +164,7 @@ struct DriveSettingsView: View {
                     "Speed",
                     value: $profile.fixedSpeed,
                     range: 1...400,
-                    step: profile.units == .kph ? 5 : 5,
+                    step: 5,
                     suffix: profile.units.short
                 )
             }
@@ -377,17 +377,34 @@ struct DriveSettingsView: View {
                     format: "%.0f%%",
                     scale: 100
                 )
-                HStack {
-                    Text("Wait")
-                    Spacer()
-                    Text("\(Int(profile.junctionStopSeconds.lower))–\(Int(profile.junctionStopSeconds.upper)) s")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                Slider(value: $profile.junctionStopSeconds.lower, in: 0...60, step: 1)
-                    .tint(LocusTheme.accent)
-                Slider(value: $profile.junctionStopSeconds.upper, in: 0...120, step: 1)
-                    .tint(LocusTheme.accentSecondary)
+                // Two bare sliders under a "Wait" heading gave no way to tell
+                // which was which, and dragging the lower past the upper
+                // silently inverted the range. Each now names itself and pushes
+                // the other along rather than crossing it.
+                sliderRow(
+                    "Wait at least",
+                    value: Binding(
+                        get: { profile.junctionStopSeconds.lower },
+                        set: {
+                            profile.junctionStopSeconds.lower = $0
+                            profile.junctionStopSeconds.upper = max($0, profile.junctionStopSeconds.upper)
+                        }
+                    ),
+                    range: 0...60,
+                    format: "%.0f s"
+                )
+                sliderRow(
+                    "at most",
+                    value: Binding(
+                        get: { profile.junctionStopSeconds.upper },
+                        set: {
+                            profile.junctionStopSeconds.upper = $0
+                            profile.junctionStopSeconds.lower = min($0, profile.junctionStopSeconds.lower)
+                        }
+                    ),
+                    range: 0...120,
+                    format: "%.0f s"
+                )
             }
 
             sliderRow(
