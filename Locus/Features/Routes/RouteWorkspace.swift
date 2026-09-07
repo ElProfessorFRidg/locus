@@ -317,10 +317,15 @@ final class RouteWorkspace: ObservableObject {
         drawnPath.removeAll()
         // A saved route carries its shape, not its stops — pin the ends so the
         // map still shows where it runs between and either end can be dragged.
+        //
+        // Named from the route's own endpoints when it has them. "Home" and
+        // "Office" are what the list already says; falling back to "Commute
+        // start" throws away the better answer and, because saving reads these
+        // names back, would have written the worse one to the next copy.
         if let first = saved.coordinates.first, let last = saved.coordinates.last {
             stops = [
-                RouteStop(coordinate: first.clLocation, name: "\(saved.name) start"),
-                RouteStop(coordinate: last.clLocation, name: "\(saved.name) end"),
+                RouteStop(coordinate: first.clLocation, name: saved.startName ?? "\(saved.name) start"),
+                RouteStop(coordinate: last.clLocation, name: saved.endName ?? "\(saved.name) end"),
             ]
         }
         focusedStopID = nil

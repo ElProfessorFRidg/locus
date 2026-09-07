@@ -275,8 +275,12 @@ final class RouteStore: ObservableObject {
         endName: String? = nil
     ) -> SavedRoute {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Uniquified here rather than at the call sites: saving happens from the
+        // planner, the trip summary and "Save a copy", and the last of those
+        // pre-fills the name of the route it is copying. Doing it once in the
+        // store means no path can put two identical rows in the list.
         var saved = SavedRoute(
-            name: trimmed.isEmpty ? route.name : trimmed,
+            name: Self.uniqueName(trimmed.isEmpty ? route.name : trimmed, among: routes),
             route: route,
             overrides: overrides
         )
@@ -361,7 +365,9 @@ final class RouteStore: ObservableObject {
     func rename(_ id: UUID, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = routes.firstIndex(where: { $0.id == id }) else { return }
-        routes[index].name = trimmed
+        // Compared against the others, not itself: renaming a route to the name
+        // it already has should be a no-op, not a promotion to "Commute 2".
+        routes[index].name = Self.uniqueName(trimmed, among: routes.filter { $0.id != id })
         persistRoutes()
     }
 
