@@ -68,6 +68,8 @@ struct RoutePlannerSheet: View {
     /// on that stop, with the sheet still open over a live map.
     private var endpointsSection: some View {
         Section {
+            travelModeRow
+
             ForEach(Array(workspace.stops.enumerated()), id: \.element.id) { index, stop in
                 stopRow(index: index, stop: stop)
             }
@@ -100,6 +102,21 @@ struct RoutePlannerSheet: View {
                 }
             }
             .disabled(workspace.isBuilding || workspace.stops.count < 2)
+
+            if let mismatch = modeMismatch {
+                // A button, not a notice: switching the mode alone doesn't
+                // re-route, so a notice would leave the same 81-hour row on
+                // screen and read as though nothing happened.
+                Button {
+                    session.travelMode = .drive
+                    buildRoute()
+                } label: {
+                    Label(mismatch, systemImage: "figure.walk.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(LocusTheme.statusWarn)
+                }
+                .disabled(!workspace.canRoute)
+            }
         } header: {
             Text("Where it goes")
         } footer: {
@@ -137,9 +154,43 @@ struct RoutePlannerSheet: View {
         guard workspace.stops.isEmpty else {
             return "Drag any marker on the map to move it. Reorder or swipe to delete here."
         }
-        let mode = session.travelMode.title.lowercased()
         return "Tap a row, then tap the map — or search for a place. "
-            + "Routes follow Apple Maps' roads and footpaths for the current travel mode (\(mode))."
+            + "Routes follow Apple Maps' roads and footpaths for the mode picked above."
+    }
+
+    /// How the route is routed, in the sheet that routes it.
+    ///
+    /// This lived only on the map screen, behind this sheet — and the one line
+    /// here that named it showed only while there were no stops, so it vanished
+    /// the moment it started to matter. The mode decides whether MapKit answers
+    /// with roads or footpaths, which is the difference between a 40-minute
+    /// drive and a 259 km walk reported at 3 km/h.
+    private var travelModeRow: some View {
+        Picker("Getting there by", selection: $session.travelMode) {
+            ForEach(TravelMode.allCases) { mode in
+                Label(mode.title, systemImage: mode.icon).tag(mode)
+            }
+        }
+        .pickerStyle(.menu)
+        .onChange(of: session.travelMode) { _, _ in
+            // Instant. Changing the mode changes what MapKit is asked for, so
+            // leaving the old answer on screen means the row still reads
+            // "81:36:04" after you switched to Drive. Only a route built from
+            // the stops is rebuilt — a drawn, imported or saved path carries a
+            // shape that re-routing would throw away.
+            guard workspace.routeIsFromStops, workspace.canRoute else { return }
+            buildRoute()
+        }
+    }
+
+    /// Set when Apple's own estimate for this route is implausibly long for the
+    /// mode it was routed in — the shape of "you asked to walk to another city".
+    private var modeMismatch: String? {
+        guard let route = workspace.selectedRoute,
+              route.expectedTravelTime > 6 * 3600,
+              !session.travelMode.usesRoadLimits else { return nil }
+        return "\(DriveFormat.distance(route.distance)) on foot — Apple says "
+            + "\(DriveFormat.clock(route.expectedTravelTime)) at walking pace. Tap to switch to Drive and route it again."
     }
 
     private func stopRow(index: Int, stop: RouteStop) -> some View {
@@ -357,7 +408,10 @@ struct RoutePlannerSheet: View {
                 showDriveSettings = true
             } label: {
                 HStack {
-                    Label("Driving parameters", systemImage: "gauge.with.dots.needle.50percent")
+                    Label(
+                        session.travelMode.usesRoadLimits ? "Driving parameters" : "Movement parameters",
+                        systemImage: "gauge.with.dots.needle.50percent"
+                    )
                     Spacer()
                     Text(session.drive.summary(for: session.travelMode))
                         .font(.caption)
@@ -371,8 +425,10 @@ struct RoutePlannerSheet: View {
             }
             .buttonStyle(.plain)
 
-            // The one dial worth having without opening the sheet.
-            if session.drive.speedSource == .roadLimit {
+            // The one dial worth having without opening the sheet — and only
+            // when it means something. Roads aren't signed for pedestrians, so
+            // on foot a "speed limit tolerance" is a dial onto nothing.
+            if session.drive.speedSource == .roadLimit, session.travelMode.usesRoadLimits {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Speed limit tolerance")
@@ -388,7 +444,7 @@ struct RoutePlannerSheet: View {
                 .padding(.vertical, 2)
             }
         } header: {
-            Text("How it drives")
+            Text(session.travelMode.usesRoadLimits ? "How it drives" : "How it moves")
         }
     }
 

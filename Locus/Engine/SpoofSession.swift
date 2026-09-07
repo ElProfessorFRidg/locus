@@ -427,7 +427,8 @@ final class SpoofSession: ObservableObject {
         // can carry them. A closure can't be written to disk, so without this
         // an interrupted "As recorded" drive came back at a generic pace.
         recordedTimes: [Date]? = nil,
-        startingAt startDistance: CLLocationDistance = 0
+        startingAt startDistance: CLLocationDistance = 0,
+        roads: [RoadSegment] = []
     ) {
         guard pairing.hasPairingFile else {
             lastError = "Import an RPPairing file in Settings first."
@@ -452,7 +453,8 @@ final class SpoofSession: ObservableObject {
             mode: mode,
             routeExpectedSpeed: expectedSpeed,
             overrides: overrides,
-            recordedSpeed: recordedSpeed
+            recordedSpeed: recordedSpeed,
+            roads: roads
         )
         guard !basePlan.isEmpty else {
             lastError = "That route is too short to drive."
@@ -499,6 +501,7 @@ final class SpoofSession: ObservableObject {
                         expectedTravelTime: expectedSpeed.map { basePlan.totalDistance / max($0, 0.1) } ?? 0,
                         distance: basePlan.totalDistance,
                         recordedTimes: recordedTimes,
+                        roads: roads,
                         overrides: overrides,
                         travelled: 0,
                         lap: 1,
@@ -591,7 +594,8 @@ final class SpoofSession: ObservableObject {
             overrides: state.overrides,
             recordedSpeed: route.recordedSpeedSampler(),
             recordedTimes: state.recordedTimes,
-            startingAt: state.travelled
+            startingAt: state.travelled,
+            roads: state.roads
         )
     }
 

@@ -292,7 +292,8 @@ struct DriveSavedRouteIntent: AppIntent {
             name: saved.name,
             overrides: saved.overrides,
             recordedSpeed: built.recordedSpeedSampler(),
-            recordedTimes: built.recordedTimes
+            recordedTimes: built.recordedTimes,
+            roads: built.roads
         )
 
         // `startRoute`'s own refusals — no pairing file, too few points — land

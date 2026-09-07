@@ -413,3 +413,153 @@ final class DriveProfileClampTests: XCTestCase {
         XCTAssertEqual(p.ceilingMetresPerSecond, SpeedUnit.kph.toMetresPerSecond(400), accuracy: 1e-9)
     }
 }
+
+/// The travel mode decides what MapKit is asked for, and the engine has to
+/// agree with it afterwards.
+///
+/// Reported from the field: a 259 km route between two French towns showed
+/// "81:36:04 · avg 3 km/h". That is MapKit's honest answer to *walk* from one
+/// to the other — the app defaults to Walk — but the sheet around it said
+/// "How it drives", offered a speed-limit dial, and the planner then anchored
+/// every estimated "limit" on the route to a pedestrian's pace.
+final class TravelModeAgreementTests: XCTestCase {
+    private let paris = CLLocationCoordinate2D(latitude: 48.85837, longitude: 2.29448)
+
+    /// A straight 4 km road, so the shape can't be what decides the answer.
+    private var road: [CLLocationCoordinate2D] {
+        (0..<160).map { Geo.offset(paris, east: 0, north: Double($0) * 25) }
+    }
+
+    private func plan(mode: TravelMode, expected: CLLocationSpeed?) -> RoutePlan {
+        var profile = DriveProfile()
+        profile.speedSource = .roadLimit
+        profile.units = .kph
+        return RouteSimulator.plan(
+            coordinates: road,
+            profile: profile,
+            mode: mode,
+            routeExpectedSpeed: expected
+        )
+    }
+
+    /// `TravelMode.usesRoadLimits` existed to say exactly this and nothing had
+    /// ever asked it.
+    func testWalkingDoesNotEstimateRoadLimits() {
+        // 0.88 m/s is what a 259 km / 81 h walking route reports.
+        let walking = plan(mode: .walk, expected: 0.88)
+        XCTAssertFalse(walking.usesEstimatedLimits, "roads are not signed for pedestrians")
+    }
+
+    func testDrivingStillEstimatesRoadLimits() {
+        let driving = plan(mode: .drive, expected: 13.4)
+        XCTAssertTrue(driving.usesEstimatedLimits)
+    }
+
+    /// The bug in one assertion: Apple's walking average was being scaled up as
+    /// though it were a driving average, so the whole ladder anchored to it.
+    func testWalkingPaceIsNotScaledUpIntoARoadLimit() {
+        let walking = plan(mode: .walk, expected: 0.88)
+        guard let first = walking.points.first else { return XCTFail("no plan") }
+        XCTAssertEqual(first.limit, TravelMode.walk.baseSpeed, accuracy: 0.01,
+                       "a walk should be planned at walking pace, not at whatever Apple's estimate implies")
+    }
+
+    /// And the mode a walking route *should* be planned at is its own, whatever
+    /// Apple reported — including an absurdly slow long-distance estimate.
+    func testWalkingIgnoresTheReportedAverageEntirely() {
+        for reported: CLLocationSpeed in [0.3, 0.88, 1.4, 40] {
+            let walking = plan(mode: .walk, expected: reported)
+            XCTAssertEqual(walking.points.first?.limit ?? 0, TravelMode.walk.baseSpeed, accuracy: 0.01,
+                           "reported \(reported) m/s")
+        }
+    }
+
+    func testRunningIsTreatedTheSameWayAsWalking() {
+        let running = plan(mode: .run, expected: 0.88)
+        XCTAssertFalse(running.usesEstimatedLimits)
+        XCTAssertEqual(running.points.first?.limit ?? 0, TravelMode.run.baseSpeed, accuracy: 0.01)
+    }
+
+    /// Cycling shares the road, so it keeps the estimate.
+    func testCyclingKeepsRoadLimits() {
+        XCTAssertTrue(plan(mode: .cycle, expected: 6.5).usesEstimatedLimits)
+    }
+}
+
+/// What the road number buys the limit estimator.
+///
+/// Reported from the field: on a route that is mostly town with some autoroute
+/// in it, the A1 came out at 110 instead of 130 and everything else sat on 30
+/// or 50. The cause was that the estimator read only the road's *shape* and
+/// scaled it off a single average for the whole journey — so an autoroute and a
+/// straight départementale were indistinguishable, and the town at one end
+/// dragged the motorway at the other down with it.
+final class RoadClassLimitTests: XCTestCase {
+    private let paris = CLLocationCoordinate2D(latitude: 48.85837, longitude: 2.29448)
+
+    /// Four kilometres of dead straight road, so shape can't be what varies.
+    private var straightRoad: [CLLocationCoordinate2D] {
+        (0..<160).map { Geo.offset(paris, east: 0, north: Double($0) * 25) }
+    }
+
+    private func plan(roads: [RoadSegment], units: SpeedUnit = .kph) -> RoutePlan {
+        var profile = DriveProfile()
+        profile.speedSource = .roadLimit
+        profile.units = units
+        return RouteSimulator.plan(
+            coordinates: straightRoad,
+            profile: profile,
+            mode: .drive,
+            // 50 km/h — a whole-route average dragged down by town driving,
+            // which is exactly the situation that produced the report.
+            routeExpectedSpeed: 13.9,
+            roads: roads
+        )
+    }
+
+    private func kph(_ plan: RoutePlan) -> Double {
+        let middle = plan.points[plan.points.count / 2]
+        return SpeedUnit.kph.fromMetresPerSecond(middle.limit)
+    }
+
+    private func covering(_ roadClass: RoadClass) -> [RoadSegment] {
+        [RoadSegment(startDistance: 0, endDistance: 100_000, roadClass: roadClass)]
+    }
+
+    /// The headline: an autoroute reads as an autoroute even when the journey's
+    /// average says 50 km/h.
+    func testAnAutorouteIsNotDraggedDownByTheRestOfTheRoute() {
+        XCTAssertEqual(kph(plan(roads: covering(.motorway))), 130, accuracy: 0.5)
+    }
+
+    /// Same geometry, four classes, four answers — proof the number is what
+    /// decides, not the shape.
+    func testTheRoadNumberDecidesTheBandOnIdenticalGeometry() {
+        XCTAssertEqual(kph(plan(roads: covering(.motorway))), 130, accuracy: 0.5)
+        XCTAssertEqual(kph(plan(roads: covering(.national))), 110, accuracy: 0.5)
+        XCTAssertEqual(kph(plan(roads: covering(.departmental))), 90, accuracy: 0.5)
+        XCTAssertEqual(kph(plan(roads: covering(.street))), 50, accuracy: 0.5)
+    }
+
+    /// Without a road number nothing changes — the shape heuristic is still
+    /// there, and it is still anchored to the journey's average. This is the
+    /// behaviour that produced the bad estimate, kept as the fallback because
+    /// it is all there is when MapKit names no road.
+    func testWithoutARoadNumberTheOldHeuristicStillRuns() {
+        let estimated = kph(plan(roads: []))
+        XCTAssertLessThan(estimated, 130, "a 50 km/h average can't reach 130 on shape alone")
+        XCTAssertGreaterThan(estimated, 0)
+    }
+
+    /// `A` means autoroute in France and a trunk road in Britain. The
+    /// classification is only trusted where the units say the numbering holds.
+    func testRoadClassesAreIgnoredInMilesPerHourCountries() {
+        let metric = kph(plan(roads: covering(.motorway), units: .kph))
+        let imperial = plan(roads: covering(.motorway), units: .mph)
+        let imperialKph = SpeedUnit.kph.fromMetresPerSecond(
+            imperial.points[imperial.points.count / 2].limit
+        )
+        XCTAssertEqual(metric, 130, accuracy: 0.5)
+        XCTAssertLessThan(imperialKph, 130, "an mph route falls back to the shape heuristic")
+    }
+}

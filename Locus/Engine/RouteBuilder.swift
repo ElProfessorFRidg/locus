@@ -20,18 +20,27 @@ struct BuiltRoute: Identifiable, Sendable {
     /// at the pace it was actually ridden possible.
     var recordedTimes: [Date]?
 
+    /// Which road each stretch is on, from MapKit's own step instructions.
+    ///
+    /// This is the difference between guessing a limit from the shape of the
+    /// tarmac and knowing you are on an autoroute. Empty for a drawn or
+    /// imported path, which has no steps to read.
+    var roads: [RoadSegment] = []
+
     init(
         name: String,
         coordinates: [CLLocationCoordinate2D],
         distance: CLLocationDistance,
         expectedTravelTime: TimeInterval,
-        recordedTimes: [Date]? = nil
+        recordedTimes: [Date]? = nil,
+        roads: [RoadSegment] = []
     ) {
         self.name = name
         self.coordinates = coordinates
         self.distance = distance
         self.expectedTravelTime = expectedTravelTime
         self.recordedTimes = recordedTimes
+        self.roads = roads
     }
 
     /// Average speed Apple expects over this route, m/s.
@@ -189,9 +198,46 @@ enum RouteBuilder {
                 name: route.name.isEmpty ? "Route \(index + 1)" : route.name,
                 coordinates: sample(polyline: route.polyline, every: 12),
                 distance: route.distance,
-                expectedTravelTime: route.expectedTravelTime
+                expectedTravelTime: route.expectedTravelTime,
+                roads: roadSegments(of: route)
             )
         }
+    }
+
+    /// Where each road starts and ends along the route.
+    ///
+    /// `MKRoute.Step` carries the instruction text and its own length, and the
+    /// steps tile the route in order — so running the lengths up gives each
+    /// named road a distance range without having to match polylines.
+    ///
+    /// A step whose instruction names no road ("Turn left") is skipped rather
+    /// than guessed at: the estimator falls back to the road's shape there,
+    /// which is what it always did.
+    static func roadSegments(of route: MKRoute) -> [RoadSegment] {
+        var travelled: CLLocationDistance = 0
+        var segments: [RoadSegment] = []
+
+        for step in route.steps {
+            let end = travelled + step.distance
+            if step.distance > 0, let roadClass = RoadClass.parse(step.instructions) {
+                // Merged with the previous run when it is the same class, so a
+                // motorway split across eight steps is one segment.
+                if let last = segments.last, last.roadClass == roadClass,
+                   abs(last.endDistance - travelled) < 1 {
+                    segments[segments.count - 1] = RoadSegment(
+                        startDistance: last.startDistance,
+                        endDistance: end,
+                        roadClass: roadClass
+                    )
+                } else {
+                    segments.append(RoadSegment(
+                        startDistance: travelled, endDistance: end, roadClass: roadClass
+                    ))
+                }
+            }
+            travelled = end
+        }
+        return segments
     }
 
     /// Routes through an ordered list of stops, one leg at a time.
@@ -227,12 +273,23 @@ enum RouteBuilder {
         var coordinates: [CLLocationCoordinate2D] = []
         var distance: CLLocationDistance = 0
         var travelTime: TimeInterval = 0
+        var roads: [RoadSegment] = []
 
         for (index, leg) in legs.enumerated() {
             // Every leg after the first starts where the previous one ended.
             // Keeping both copies would leave a zero-length step for the walker
             // to divide by when it works out a bearing.
             coordinates += index == 0 ? leg.coordinates : Array(leg.coordinates.dropFirst())
+            // Each leg numbers its roads from its own zero, so they are shifted
+            // by everything already travelled before being joined.
+            let offset = distance
+            roads += leg.roads.map {
+                RoadSegment(
+                    startDistance: $0.startDistance + offset,
+                    endDistance: $0.endDistance + offset,
+                    roadClass: $0.roadClass
+                )
+            }
             distance += leg.distance
             travelTime += leg.expectedTravelTime
         }
@@ -244,7 +301,8 @@ enum RouteBuilder {
             name: "Via \(intermediate) stop\(intermediate == 1 ? "" : "s")",
             coordinates: coordinates,
             distance: distance,
-            expectedTravelTime: travelTime
+            expectedTravelTime: travelTime,
+            roads: roads
         )]
     }
 
@@ -350,7 +408,8 @@ enum RouteBuilder {
             name: "Drawn path, on roads",
             coordinates: route.coordinates,
             distance: route.distance,
-            expectedTravelTime: route.expectedTravelTime
+            expectedTravelTime: route.expectedTravelTime,
+            roads: route.roads
         )
     }
 

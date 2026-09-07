@@ -236,7 +236,8 @@ enum RouteSimulator {
         mode: TravelMode,
         routeExpectedSpeed: CLLocationSpeed? = nil,
         overrides: [LimitOverride] = [],
-        recordedSpeed: ((CLLocationDistance) -> CLLocationSpeed)? = nil
+        recordedSpeed: ((CLLocationDistance) -> CLLocationSpeed)? = nil,
+        roads: [RoadSegment] = []
     ) -> RoutePlan {
         // ~8 m spacing keeps corner geometry meaningful without making the
         // arrays huge on a long motorway leg.
@@ -265,7 +266,11 @@ enum RouteSimulator {
         // Replaying a recording only makes sense when there is one; falling
         // back keeps a GPX without timestamps from driving at zero.
         let replaying = profile.speedSource == .recorded && recordedSpeed != nil
-        let usesLimits = profile.speedSource == .roadLimit
+        // The mode has a veto. `TravelMode.usesRoadLimits` was written to say
+        // that road limits are meaningless on foot — and nothing had ever asked
+        // it, so a walking route with the default "limit +10%" profile had its
+        // whole speed ladder anchored to a pedestrian's pace.
+        let usesLimits = profile.speedSource == .roadLimit && mode.usesRoadLimits
         let baseline = baselineSpeed(
             profile: profile,
             mode: mode,
@@ -277,7 +282,8 @@ enum RouteSimulator {
                 coordinates: resampled,
                 cumulative: cumulative,
                 baseline: baseline,
-                units: profile.units
+                units: profile.units,
+                roads: roads
             )
             : Array(repeating: baseline, count: resampled.count)
 
@@ -364,6 +370,12 @@ enum RouteSimulator {
             // is a better guess than nothing.
             return mode.baseSpeed
         case .roadLimit:
+            // Roads are not signed for pedestrians, so on foot the mode's own
+            // pace is the answer. Without this, Apple's *walking* estimate got
+            // scaled up as though it were a driving average: a 259 km walk
+            // reports 3 km/h, and every "limit" on the route came out of that.
+            guard mode.usesRoadLimits else { return mode.baseSpeed }
+
             // Apple's expected travel time already folds in junctions, lights
             // and typical traffic, so the average it implies runs well under the
             // posted limit. Scaling it back up recovers something close to the
@@ -371,8 +383,7 @@ enum RouteSimulator {
             guard let observed = routeExpectedSpeed, observed > 0.5 else {
                 return mode.baseSpeed
             }
-            let correction = mode == .drive || mode == .cycle ? 1.25 : 1.05
-            return observed * correction
+            return observed * 1.25
         }
     }
 
@@ -386,12 +397,21 @@ enum RouteSimulator {
         coordinates: [CLLocationCoordinate2D],
         cumulative: [CLLocationDistance],
         baseline: CLLocationSpeed,
-        units: SpeedUnit
+        units: SpeedUnit,
+        roads: [RoadSegment] = []
     ) -> [CLLocationSpeed] {
         let ladder = units.speedLadder.map { units.toMetresPerSecond($0) }
         guard let slowest = ladder.first, let fastest = ladder.last else {
             return Array(repeating: baseline, count: coordinates.count)
         }
+
+        // `RoadClass` reads continental numbering, where A is an autoroute and
+        // D a départementale. In an mph country the same letters mean other
+        // things — a UK A-road is not a motorway — so the classification is
+        // only trusted where the units say we are somewhere it holds. It is a
+        // proxy for the country, and the honest fallback is the shape
+        // heuristic that was there before.
+        let usesContinentalNumbers = units == .kph
 
         var raw: [CLLocationSpeed] = []
         raw.reserveCapacity(coordinates.count)
@@ -418,8 +438,20 @@ enum RouteSimulator {
             // 12 direction changes per km is town centre; 0 is open road.
             let densityScore = 1 - (density / 12).clamped(to: 0...1)
 
-            let openness = 0.55 + 0.95 * (0.6 * radiusScore + 0.4 * densityScore)
-            raw.append((baseline * openness).clamped(to: slowest...fastest))
+            // 0 = tight and junction-dense, 1 = open and straight.
+            let shape = (0.6 * radiusScore + 0.4 * densityScore).clamped(to: 0...1)
+
+            if let band = roads.roadClass(at: cumulative[index])?.bandKph, usesContinentalNumbers {
+                // The road number said what kind of road this is, so the shape
+                // only has to pick within that road's own band. This is what
+                // stops an autoroute being averaged down to 110 by the town at
+                // the other end of the route.
+                let kph = band.lowerBound + (band.upperBound - band.lowerBound) * shape
+                raw.append(SpeedUnit.kph.toMetresPerSecond(kph))
+            } else {
+                let openness = 0.55 + 0.95 * shape
+                raw.append((baseline * openness).clamped(to: slowest...fastest))
+            }
         }
 
         // Smooth before snapping so a single noisy vertex can't drop the whole

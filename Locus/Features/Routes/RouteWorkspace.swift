@@ -245,6 +245,7 @@ final class RouteWorkspace: ObservableObject {
 
     func clearRoutes() {
         routes = []
+        routeIsFromStops = false
         selectedRouteID = nil
         savedRouteID = nil
         overrides = []
@@ -253,11 +254,17 @@ final class RouteWorkspace: ObservableObject {
         outline = nil
     }
 
-    func adopt(_ built: [BuiltRoute]) {
+    /// True when the current route was routed from `stops`, so changing the
+    /// travel mode can rebuild it. False for a drawn, imported or saved path —
+    /// those carry a shape that re-routing would throw away.
+    @Published private(set) var routeIsFromStops = false
+
+    func adopt(_ built: [BuiltRoute], fromStops: Bool = false) {
         routes = built
         selectedRouteID = built.first?.id
         savedRouteID = nil
         overrides = []
+        routeIsFromStops = fromStops
     }
 
     /// Replaces the road route with an imported or drawn path so the rest of the
@@ -295,6 +302,7 @@ final class RouteWorkspace: ObservableObject {
         selectedRouteID = routes.first?.id
         savedRouteID = nil
         overrides = []
+        routeIsFromStops = false
         // The stops describe a road route; an imported track isn't one, and
         // leaving them on the map would claim this path runs between them.
         stops = []
@@ -313,6 +321,7 @@ final class RouteWorkspace: ObservableObject {
         routes = [saved.built]
         selectedRouteID = routes.first?.id
         savedRouteID = saved.id
+        routeIsFromStops = false
         overrides = saved.overrides
         drawnPath.removeAll()
         // A saved route carries its shape, not its stops — pin the ends so the
@@ -353,7 +362,8 @@ final class RouteWorkspace: ObservableObject {
             mode: mode,
             routeExpectedSpeed: activeExpectedSpeed,
             overrides: overrides,
-            recordedSpeed: recordedSpeedSampler
+            recordedSpeed: recordedSpeedSampler,
+            roads: selectedRoute?.roads ?? []
         )
         stretches = plan.stretches()
         previewUsesLimits = plan.usesEstimatedLimits
@@ -415,7 +425,7 @@ final class RouteWorkspace: ObservableObject {
                 mode: mode,
                 onProgress: { [weak self] done, total in self?.noteProgress(done, of: total) }
             )
-            adopt(built)
+            adopt(built, fromStops: true)
             return nil
         } catch {
             return error.localizedDescription
@@ -447,6 +457,7 @@ final class RouteWorkspace: ObservableObject {
         selectedRouteID = back.id
         savedRouteID = nil
         overrides = []
+        routeIsFromStops = false
         stops.reverse()
     }
 
@@ -505,7 +516,8 @@ extension SpoofSession {
             name: workspace.selectedRoute?.name ?? "Route",
             overrides: workspace.overrides,
             recordedSpeed: workspace.recordedSpeedSampler,
-            recordedTimes: workspace.selectedRoute?.recordedTimes
+            recordedTimes: workspace.selectedRoute?.recordedTimes,
+            roads: workspace.selectedRoute?.roads ?? []
         )
         // Counted here rather than at each call site: three places start a
         // drive, and "most driven" is only useful if all three agree. After
