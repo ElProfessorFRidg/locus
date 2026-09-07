@@ -336,8 +336,13 @@ final class RouteStore: ObservableObject {
               let last = route.coordinates.last else { return }
 
         Task { [weak self] in
-            let start = route.startName ?? await resolve(first.clLocation)
-            let end = route.endName ?? await resolve(last.clLocation)
+            // Not `??`: its right-hand side is an autoclosure, which cannot be
+            // async, so a coalesce here doesn't compile.
+            var start = route.startName
+            if start == nil { start = await resolve(first.clLocation) }
+            var end = route.endName
+            if end == nil { end = await resolve(last.clLocation) }
+
             // Re-found by id: the list can have been edited while the geocoder
             // was out, and writing back to a stale index renames a stranger.
             guard let self, let index = self.routes.firstIndex(where: { $0.id == id }) else { return }
