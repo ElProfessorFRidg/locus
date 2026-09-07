@@ -104,6 +104,53 @@ struct DriveProfileQuery: EntityQuery {
     }
 }
 
+/// A saved route, so a shortcut can set one going by name.
+struct SavedRouteEntity: AppEntity {
+    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Saved route"
+    static var defaultQuery = SavedRouteQuery()
+
+    var id: UUID
+    var name: String
+    /// "Home → Office", when the route knows where it runs between. Siri shows
+    /// it under the name, which is what tells two commutes apart in a list you
+    /// are reading rather than tapping.
+    var journey: String?
+
+    var displayRepresentation: DisplayRepresentation {
+        if let journey {
+            return DisplayRepresentation(title: "\(name)", subtitle: "\(journey)")
+        }
+        return DisplayRepresentation(title: "\(name)")
+    }
+
+    init(_ route: SavedRoute) {
+        id = route.id
+        name = route.name
+        journey = route.journey
+    }
+}
+
+struct SavedRouteQuery: EntityQuery {
+    func entities(for identifiers: [UUID]) async throws -> [SavedRouteEntity] {
+        await MainActor.run {
+            SpoofSession.shared.routeStore.routes
+                .filter { identifiers.contains($0.id) }
+                .map(SavedRouteEntity.init)
+        }
+    }
+
+    /// Offered most-recently-driven first, the same order the saved list leads
+    /// with — the route you want from Siri is overwhelmingly the one you drove
+    /// yesterday.
+    func suggestedEntities() async throws -> [SavedRouteEntity] {
+        await MainActor.run {
+            SavedRouteOrder.recent
+                .sort(SpoofSession.shared.routeStore.routes)
+                .map(SavedRouteEntity.init)
+        }
+    }
+}
+
 // MARK: - Intents
 
 struct TeleportIntent: AppIntent {
@@ -204,6 +251,67 @@ struct SelectDriveProfileIntent: AppIntent {
     }
 }
 
+/// Sets a saved route going, by name.
+///
+/// Routes were saveable, nameable and searchable in the app, and the only thing
+/// Siri could do with a location was teleport to a point. "Drive my commute" is
+/// the whole reason a route gets saved in the first place.
+struct DriveSavedRouteIntent: AppIntent {
+    static var title: LocalizedStringResource = "Drive a saved route"
+    static var description = IntentDescription("Starts playing a route you've saved, with your current driving profile.")
+    // A drive needs the app up: it holds the background keep-alive, the HUD and
+    // the Live Activity.
+    static var openAppWhenRun = true
+
+    @Parameter(title: "Route", requestValueDialog: "Which route?")
+    var route: SavedRouteEntity
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Drive \(\.$route)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard PairingStore.shared.hasPairingFile else {
+            throw LocusIntentError.notPaired
+        }
+
+        let session = SpoofSession.shared
+        guard let saved = session.routeStore.routes.first(where: { $0.id == route.id }) else {
+            throw LocusIntentError.failed("That route isn’t saved any more.")
+        }
+
+        // A stale error from earlier would otherwise read as this drive failing.
+        session.lastError = nil
+
+        let built = saved.built
+        session.startRoute(
+            built.coordinates,
+            pairing: PairingStore.shared,
+            expectedSpeed: built.expectedSpeed,
+            name: saved.name,
+            overrides: saved.overrides,
+            recordedSpeed: built.recordedSpeedSampler(),
+            recordedTimes: built.recordedTimes
+        )
+        // Counted here as well as in the app, so "most driven" stays true
+        // however the drive was started.
+        session.routeStore.markDriven(saved.id)
+
+        // `startRoute`'s own refusals — no pairing file, too few points — land
+        // in `lastError` before it returns, so they are caught here. Anything
+        // that fails later shows up in the app this intent just opened, which
+        // is a better place for it than a Siri dialog twenty seconds after the
+        // fact.
+        if let error = session.lastError {
+            throw LocusIntentError.failed(error)
+        }
+
+        let journey = saved.journey.map { " (\($0))" } ?? ""
+        return .result(dialog: "Driving \(saved.name)\(journey).")
+    }
+}
+
 // MARK: - Support
 
 enum LocusIntentError: Error, CustomLocalizedStringResourceConvertible {
@@ -260,6 +368,16 @@ struct LocusShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Teleport",
             systemImageName: "location.north.circle.fill"
+        )
+        AppShortcut(
+            intent: DriveSavedRouteIntent(),
+            phrases: [
+                "Drive a route with \(.applicationName)",
+                "Drive my route in \(.applicationName)",
+                "\(.applicationName) drive",
+            ],
+            shortTitle: "Drive a saved route",
+            systemImageName: "car.fill"
         )
         AppShortcut(
             intent: StopSpoofingIntent(),

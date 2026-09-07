@@ -25,7 +25,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Route coloured by estimated limit before you drive it, with per-stretch corrections
 - Live speedometer with a speed-limit sign, plus a Lock Screen / Dynamic Island Live Activity
 - Playback speed changes mid-drive from the HUD, and the screen stays on while you watch
-- Siri and Shortcuts — teleport, stop, connect the tunnel, switch profile
+- Siri and Shortcuts — teleport, **drive a saved route by name**, stop, connect the tunnel, switch profile
 - Draw a path, or import / export GPX (timestamps replayed at their recorded pace)
 - Background keep-alive + live status bar + drop alerts
 - Paste a coordinate or a Maps link into search; long-press the status bar to copy, link or share where you are
