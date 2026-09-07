@@ -173,11 +173,11 @@ enum CoordinateParser {
 
     /// Built once. The search field re-parses on every keystroke, and both of
     /// these cost real work to construct.
-    private nonisolated(unsafe) static let linkDetector = try? NSDataDetector(
+    private static let linkDetector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
 
-    private nonisolated(unsafe) static let dmsRegex = try? NSRegularExpression(
+    private static let dmsRegex = try? NSRegularExpression(
         pattern: #"([0-9]{1,3})[°º:\s]+([0-9]{1,2})['′:\s]+([0-9]{1,2}(?:[.,][0-9]+)?)?["″]?\s*([NSEWnsew])"#
     )
 

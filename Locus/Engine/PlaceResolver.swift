@@ -84,7 +84,9 @@ final class PlaceResolver: ObservableObject {
     /// A line someone would actually say out loud: the specific part, then the
     /// town. Not the postal address, which is too long for a status bar and
     /// mostly redundant on a map.
-    static func describe(_ placemark: CLPlacemark) -> String? {
+    /// `nonisolated` because it is a pure reading of a placemark and nothing
+    /// else — `PlaceNamer` is a separate actor and has the same question.
+    nonisolated static func describe(_ placemark: CLPlacemark) -> String? {
         let specific = placemark.name
             ?? [placemark.subThoroughfare, placemark.thoroughfare]
                 .compactMap { $0 }
