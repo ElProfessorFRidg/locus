@@ -29,6 +29,15 @@ struct MapHomeView: View {
     /// Where the crosshair is pointing. Only tracked while precision mode is
     /// on — otherwise every frame of every pan would redraw this view.
     @State private var mapCenter: CLLocationCoordinate2D?
+    /// Roughly how much ground the map is showing, used to size tap targets
+    /// that have to mean the same thing at every zoom.
+    @State private var mapSpanMetres: CLLocationDistance = 2000
+    /// The stop being dragged, so the map knows not to treat the gesture as a
+    /// tap and the marker knows to grow.
+    @State private var draggingStopID: UUID?
+    /// Set while a stop is waiting for a point, which turns the next map tap
+    /// into "put it here" rather than "move the teleport pin".
+    @State private var routePlacementHint: String?
 
     @Namespace private var chromeGlass
 
@@ -51,6 +60,7 @@ struct MapHomeView: View {
                     pinAnnotation(proxy: proxy)
                     spoofAnnotation
                     routeOverlays
+                    stopAnnotations(proxy: proxy)
                 }
                 .mapStyle(mapStyle)
                 // Declaring the two we want replaces the default set, so the
@@ -63,6 +73,10 @@ struct MapHomeView: View {
                 .mapControlVisibility(.automatic)
                 .onMapCameraChange(frequency: precisionMode ? .continuous : .onEnd) { context in
                     mapCenter = context.region.center
+                    // A degree of latitude is ~111 km everywhere, which is all
+                    // the precision this needs: it sizes a tap target, not a
+                    // measurement.
+                    mapSpanMetres = max(50, context.region.span.latitudeDelta * 111_000)
                 }
                 .onTapGesture { point in
                     // A tap on the map while the keyboard is up is a tap to put
@@ -71,12 +85,13 @@ struct MapHomeView: View {
                     // the exact moment you went to look at it.
                     let wasTyping = searchFocused
                     searchFocused = false
-                    guard !wasTyping, !suppressNextMapTap, !isDraggingPin else { return }
+                    guard !wasTyping, !suppressNextMapTap, !isDraggingPin,
+                          draggingStopID == nil else { return }
                     // In precision mode the map is the thing being moved, not
                     // the pin: a tap is part of aiming, not a placement.
                     guard !precisionMode else { return }
                     pinSelected = false
-                    placePin(at: point, proxy: proxy)
+                    handleMapTap(at: point, proxy: proxy)
                 }
             }
             .background(Color.black.ignoresSafeArea())
@@ -142,6 +157,11 @@ struct MapHomeView: View {
                 onFocus: focus(on:)
             )
             .presentationDetents([.medium, .large])
+            // The map underneath stays live at the medium detent. Without this
+            // the planner is a modal over the thing it is planning on: you set
+            // a stop, close the sheet to look, and reopen it — which is the
+            // loop this whole rework exists to remove.
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
             .environmentObject(session)
             // The corrections list is the preview's output, so make sure it
             // exists before the sheet that edits it opens.
@@ -200,6 +220,70 @@ struct MapHomeView: View {
         }
     }
 
+    /// One lettered marker per stop, each draggable.
+    @MapContentBuilder
+    private func stopAnnotations(proxy: MapProxy) -> some MapContent {
+        ForEach(Array(workspace.stops.enumerated()), id: \.element.id) { index, stop in
+            Annotation("", coordinate: stop.coordinate, anchor: .bottom) {
+                RouteStopMarker(
+                    label: RouteStop.label(at: index),
+                    role: role(at: index),
+                    isFocused: workspace.focusedStopID == stop.id,
+                    isDragging: draggingStopID == stop.id,
+                    name: stop.name,
+                    onTap: {
+                        suppressNextMapTap = true
+                        withAnimation(.snappy) {
+                            // Tapping a stop asks for it: the next tap on the
+                            // map moves this one rather than adding another.
+                            workspace.focusedStopID =
+                                workspace.focusedStopID == stop.id ? nil : stop.id
+                        }
+                        updatePlacementHint()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            suppressNextMapTap = false
+                        }
+                    },
+                    onRemove: {
+                        suppressNextMapTap = true
+                        withAnimation { workspace.removeStop(stop.id) }
+                        updatePlacementHint()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            suppressNextMapTap = false
+                        }
+                    },
+                    onDragBegan: {
+                        searchFocused = false
+                        suppressNextMapTap = true
+                        draggingStopID = stop.id
+                    },
+                    onDragMoved: { globalPoint in
+                        if let coordinate = proxy.convert(globalPoint, from: .global) {
+                            workspace.dragStop(stop.id, to: coordinate)
+                        }
+                    },
+                    onDragEnded: {
+                        draggingStopID = nil
+                        // Rebuild once, on release. Routing on every frame of a
+                        // drag would be a request per pixel and Apple would
+                        // throttle it into uselessness.
+                        rebuildRouteIfPossible()
+                        resolveStopNames()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            suppressNextMapTap = false
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    private func role(at index: Int) -> RouteStopMarker.Role {
+        if index == 0 { return .start }
+        if index == workspace.stops.count - 1 { return .end }
+        return .waypoint
+    }
+
     @MapContentBuilder
     private var spoofAnnotation: some MapContent {
         if let sim = session.simulated {
@@ -249,15 +333,110 @@ struct MapHomeView: View {
         }
     }
 
-    private func placePin(at point: CGPoint, proxy: MapProxy) {
-        guard let coord = proxy.convert(point, from: .local) else { return }
+    /// What a tap on the map means, in the order the meanings win.
+    ///
+    /// Drawing takes it, then a stop that is waiting for a point, then an
+    /// alternative route close enough to be what the finger was aiming at, and
+    /// only then the teleport pin. Every branch is something someone has just
+    /// asked for; the pin is the default because it is what you get when you
+    /// have asked for nothing.
+    private func handleMapTap(at point: CGPoint, proxy: MapProxy) {
+        guard let coordinate = proxy.convert(point, from: .local) else { return }
+
         if workspace.drawMode {
-            workspace.drawnPath.append(coord)
-        } else {
-            session.setPin(coord)
-            pinPlaceName = nil
-            pinSelected = false
+            workspace.drawnPath.append(coordinate)
+            return
         }
+
+        if workspace.focusedStopID != nil {
+            workspace.place(coordinate)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            updatePlacementHint()
+            rebuildRouteIfPossible()
+            resolveStopNames()
+            return
+        }
+
+        // Picking between alternatives on the map beats picking from a list:
+        // the difference between them is a shape, and the list can only
+        // describe it. They are drawn faintly underneath for exactly this.
+        if let alternative = alternativeRoute(near: coordinate) {
+            withAnimation(.snappy) { workspace.selectedRouteID = alternative }
+            UISelectionFeedbackGenerator().selectionChanged()
+            refreshPreview()
+            return
+        }
+
+        session.setPin(coordinate)
+        pinPlaceName = nil
+        pinSelected = false
+    }
+
+    /// The unselected alternative running closest to `coordinate`, if one passes
+    /// near enough to have been the target.
+    ///
+    /// The threshold scales with the zoom: forty metres is a fat finger on a
+    /// street map and invisible on a country one, so it is measured in screen
+    /// terms — a fixed fraction of what the map is currently showing.
+    private func alternativeRoute(near coordinate: CLLocationCoordinate2D) -> UUID? {
+        let candidates = workspace.routes.filter {
+            $0.id != workspace.selectedRoute?.id && $0.coordinates.count > 1
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        let threshold = max(25, mapSpanMetres * 0.03)
+
+        var best: (id: UUID, distance: CLLocationDistance)?
+        for route in candidates {
+            // Sampled rather than exhaustive: the polyline is already resampled
+            // to about 12 m, so every fourth point is a ~50 m sieve — plenty to
+            // decide which of two roads a thumb was on.
+            for point in stride(from: 0, to: route.coordinates.count, by: 4) {
+                let distance = Geo.distance(route.coordinates[point], coordinate)
+                if distance < (best?.distance ?? .greatestFiniteMagnitude) {
+                    best = (route.id, distance)
+                }
+            }
+        }
+        guard let best, best.distance <= threshold else { return nil }
+        return best.id
+    }
+
+    /// Rebuilds the road route when there is something to route between.
+    private func rebuildRouteIfPossible() {
+        guard workspace.canRoute else { return }
+        Task {
+            if let error = await workspace.buildRoadRoute(
+                fallbackStart: session.simulated ?? session.pin,
+                mode: session.travelMode
+            ) {
+                session.lastError = error
+            } else {
+                refreshPreview()
+            }
+        }
+    }
+
+    /// Names each stop from a reverse geocode, so the planner lists places
+    /// rather than latitudes.
+    private func resolveStopNames() {
+        for stop in workspace.stops where stop.name == nil {
+            Task { @MainActor in
+                if let name = await PlaceNamer.shared.name(for: stop.coordinate) {
+                    workspace.nameStop(stop.id, name)
+                }
+            }
+        }
+    }
+
+    /// The one-line prompt above the map while a stop is waiting for a point.
+    private func updatePlacementHint() {
+        guard let stop = workspace.focusedStop, let index = workspace.index(of: stop.id) else {
+            routePlacementHint = nil
+            return
+        }
+        let role = role(at: index)
+        routePlacementHint = "Tap the map to set \(role.title.lowercased()) \(RouteStop.label(at: index))."
     }
 
     // MARK: - Chrome
@@ -314,6 +493,12 @@ struct MapHomeView: View {
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
                 }
 
+                if let hint = routePlacementHint {
+                    routePlacementBanner(hint)
+                        .locusGlassID("placing", in: chromeGlass)
+                        .transition(.scale(scale: 0.92).combined(with: .opacity))
+                }
+
                 if workspace.drawMode {
                     drawModeBanner
                         .locusGlassID("draw", in: chromeGlass)
@@ -334,6 +519,7 @@ struct MapHomeView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: workspace.drawMode)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: importedPaceHint)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: precisionMode)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: routePlacementHint)
     }
 
     private var searchBar: some View {
@@ -573,6 +759,33 @@ struct MapHomeView: View {
         .contentShape(Capsule())
     }
 
+    /// Says which stop the next map tap fills in, and gets out of the way.
+    ///
+    /// Modes that silently change what a tap does are how you lose a pin you
+    /// spent a minute placing. This one announces itself and can be cancelled
+    /// from the same place it appears.
+    private func routePlacementBanner(_ hint: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "smallcircle.filled.circle")
+                .foregroundStyle(LocusTheme.accent)
+            Text(hint)
+                .font(.caption.weight(.medium))
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button("Cancel") {
+                workspace.focusedStopID = nil
+                updatePlacementHint()
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .locusGlass(.clear, in: Capsule())
+        .contentShape(Capsule())
+    }
+
     private var drawModeBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "hand.tap.fill")
@@ -729,22 +942,35 @@ struct MapHomeView: View {
                let item = response.mapItems.first {
                 let coord = item.placemark.coordinate
                 let title = item.name ?? completion.title
-                session.setPin(coord)
-                pinPlaceName = title
-                position = .region(MKCoordinateRegion(
-                    center: coord,
-                    latitudinalMeters: 1200,
-                    longitudinalMeters: 1200
-                ))
                 searchText = ""
                 search.query = ""
                 searchFocused = false
+
                 // Recent, not favourite. Searching for a place is not the same
                 // as starring it — this used to do both, so the favourites list
                 // filled up with everything anyone had ever looked up, and the
                 // star button next to the pin was already lit before it was
                 // ever pressed.
                 session.pushNamedRecent(name: title, coordinate: coord)
+
+                // Searching while the planner is waiting for a stop fills that
+                // stop in. Routing to a named place used to mean finding it,
+                // reading its coordinates off the pin and setting the endpoint
+                // by hand.
+                if workspace.focusedStopID != nil {
+                    workspace.place(coord, name: title)
+                    updatePlacementHint()
+                    rebuildRouteIfPossible()
+                } else {
+                    session.setPin(coord)
+                    pinPlaceName = title
+                }
+
+                position = .region(MKCoordinateRegion(
+                    center: coord,
+                    latitudinalMeters: 1200,
+                    longitudinalMeters: 1200
+                ))
             }
         }
     }
@@ -753,15 +979,24 @@ struct MapHomeView: View {
     /// short of teleporting: a pasted link is a suggestion, and the Teleport
     /// button is right there.
     private func go(to match: CoordinateParser.Match) {
-        session.setPin(match.coordinate)
-        pinPlaceName = match.name
-        pinSelected = false
         searchText = ""
         search.query = ""
         searchFocused = false
         followsDrive = false
         if let name = match.name {
             session.pushNamedRecent(name: name, coordinate: match.coordinate)
+        }
+
+        // Same rule as a search result: a stop that is waiting for a point gets
+        // it, so a pasted coordinate can be a route endpoint.
+        if workspace.focusedStopID != nil {
+            workspace.place(match.coordinate, name: match.name)
+            updatePlacementHint()
+            rebuildRouteIfPossible()
+        } else {
+            session.setPin(match.coordinate)
+            pinPlaceName = match.name
+            pinSelected = false
         }
         withAnimation(.easeInOut(duration: 0.35)) {
             position = .region(MKCoordinateRegion(
@@ -852,12 +1087,20 @@ struct MapHomeView: View {
             session.lastError = "Nothing to export."
             return
         }
-        let gpx = GPXCodec.export(path)
+        let name = workspace.selectedRoute?.name ?? "Locus Route"
+        // Timestamps too, when the route has them: exporting a recorded track
+        // and importing it back used to flatten it to a bare line, losing the
+        // one thing that made it a recording.
+        let gpx = GPXCodec.export(
+            path,
+            name: name,
+            times: workspace.selectedRoute?.recordedTimes
+        )
         // Named after the route. Exporting three routes in a row used to write
         // three files called Locus-Route.gpx, which Files and Mail then keep
         // apart with "(1)" and "(2)" — leaving you to guess which is which.
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(Self.exportFilename(for: workspace.selectedRoute?.name))
+            .appendingPathComponent(Self.exportFilename(for: name))
         do {
             try gpx.data(using: .utf8)?.write(to: url)
             let activity = UIActivityViewController(activityItems: [url], applicationActivities: nil)

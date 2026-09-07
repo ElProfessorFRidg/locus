@@ -38,6 +38,11 @@ struct RoutePlannerSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
+                if workspace.stops.count >= 2 {
+                    ToolbarItem(placement: .primaryAction) {
+                        EditButton()
+                    }
+                }
             }
             .sheet(isPresented: $showDriveSettings) {
                 DriveSettingsView(
@@ -52,92 +57,171 @@ struct RoutePlannerSheet: View {
 
     // MARK: - Endpoints
 
+    /// The stops, in order, each one a row you can point at.
+    ///
+    /// This replaced a fixed Start/End pair whose only way to receive a
+    /// coordinate was a "Use pin" button — which meant closing the sheet,
+    /// moving the single teleport pin, and coming back. Tapping a row here arms
+    /// it instead: the next map tap, search result or pasted coordinate lands
+    /// on that stop, with the sheet still open over a live map.
     private var endpointsSection: some View {
         Section {
-            endpointRow(
-                title: "Start",
-                coordinate: workspace.start,
-                placeholder: session.simulated == nil ? "Current pin" : "Where you are now",
-                source: session.simulated ?? session.pin
-            ) {
-                workspace.start = session.simulated ?? session.pin
+            ForEach(Array(workspace.stops.enumerated()), id: \.element.id) { index, stop in
+                stopRow(index: index, stop: stop)
             }
-
-            endpointRow(
-                title: "End",
-                coordinate: workspace.end,
-                placeholder: "Drop a pin",
-                source: session.pin
-            ) {
-                workspace.end = session.pin
+            .onDelete { offsets in
+                for index in offsets.sorted(by: >) where workspace.stops.indices.contains(index) {
+                    workspace.removeStop(workspace.stops[index].id)
+                }
             }
+            .onMove { workspace.moveStops(from: $0, to: $1) }
 
-            if workspace.start != nil || workspace.end != nil {
-                Button("Swap ends", systemImage: "arrow.up.arrow.down") {
-                    let previous = workspace.start
-                    workspace.start = workspace.end
-                    workspace.end = previous
+            addStopRow
+
+            if workspace.stops.count >= 2 {
+                Button("Reverse the route", systemImage: "arrow.up.arrow.down") {
+                    workspace.reverseStops()
+                    buildRoute()
                 }
             }
 
             Button {
-                Task {
-                    if let error = await workspace.buildRoadRoute(
-                        fallbackStart: session.simulated ?? session.pin,
-                        mode: session.travelMode
-                    ) {
-                        session.lastError = error
-                    } else if let route = workspace.selectedRoute {
-                        onFocus(route.coordinates)
-                    }
-                }
+                buildRoute()
             } label: {
                 HStack {
-                    Label("Find route on roads", systemImage: "road.lanes")
+                    Label(
+                        workspace.stops.count > 2 ? "Route through the stops" : "Find route on roads",
+                        systemImage: "road.lanes"
+                    )
                     Spacer()
                     if workspace.isBuilding { ProgressView() }
                 }
             }
-            .disabled(workspace.isBuilding)
+            .disabled(workspace.isBuilding || workspace.stops.count < 2)
         } header: {
-            Text("From and to")
+            Text("Where it goes")
         } footer: {
-            Text("Routes follow Apple Maps' roads and footpaths for the current travel mode (\(session.travelMode.title.lowercased())).")
+            Text(workspace.stops.isEmpty
+                 ? "Tap a row, then tap the map — or search for a place. Routes follow Apple Maps' roads and footpaths for the current travel mode (\(session.travelMode.title.lowercased()))."
+                 : "Drag any marker on the map to move it. Reorder or swipe to delete here.")
         }
     }
 
-    /// - Parameter source: what "Use pin" would copy in. Nil means there is
-    ///   nothing to copy, and the button says so instead of silently writing
-    ///   `nil` over the endpoint — which looked exactly like a dead button.
-    private func endpointRow(
-        title: String,
-        coordinate: CLLocationCoordinate2D?,
-        placeholder: String,
-        source: CLLocationCoordinate2D?,
-        set: @escaping () -> Void
-    ) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                // The address when one has been resolved for this spot: "Rue de
-                // Rivoli" tells you whether the endpoint is right, and
-                // "48.85837, 2.29448" does not.
-                if let coordinate, let address = session.places.address(for: coordinate) {
-                    Text(address)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private func stopRow(index: Int, stop: RouteStop) -> some View {
+        let focused = workspace.focusedStopID == stop.id
+        let role = index == 0
+            ? "Start"
+            : (index == workspace.stops.count - 1 ? "End" : "Stop")
+
+        return Button {
+            // Tapping an armed row disarms it, so this can't become a mode you
+            // are stuck in.
+            workspace.focusedStopID = focused ? nil : stop.id
+        } label: {
+            HStack(spacing: 12) {
+                Text(RouteStop.label(at: index))
+                    .font(.caption.weight(.heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(stopTint(index)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(stop.name ?? role)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
-                } else {
-                    Text(coordinate.map(Self.coordinateText) ?? placeholder)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(coordinate == nil ? .tertiary : .secondary)
+                    Text(focused
+                         ? "Tap the map or search to set this one"
+                         : Self.coordinateText(stop.coordinate))
+                        .font(focused ? .caption : .caption.monospaced())
+                        .foregroundStyle(focused ? LocusTheme.accent : .secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                if focused {
+                    Image(systemName: "scope")
+                        .foregroundStyle(LocusTheme.accent)
                 }
             }
-            Spacer()
-            Button("Use pin", action: set)
-                .buttonStyle(.borderless)
-                .font(.subheadline.weight(.semibold))
-                .disabled(source == nil)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func stopTint(_ index: Int) -> Color {
+        if index == 0 { return LocusTheme.statusGood }
+        if index == workspace.stops.count - 1 { return LocusTheme.accent }
+        return LocusTheme.accentSecondary
+    }
+
+    /// Adds a stop and arms it in one tap — the two things you always wanted
+    /// together.
+    private var addStopRow: some View {
+        Menu {
+            Button("Where I am now", systemImage: "location.fill") {
+                guard let here = session.simulated ?? session.pin ?? session.realCoordinate else {
+                    session.lastError = "No position yet — drop a pin, or wait for a GPS fix."
+                    return
+                }
+                arm(workspace.addStop(here, name: "Where you are"))
+                buildRoute()
+            }
+            Button("The current pin", systemImage: "mappin") {
+                guard let pin = session.pin else {
+                    session.lastError = "Tap the map to drop a pin first."
+                    return
+                }
+                arm(workspace.addStop(pin, name: session.places.address(for: pin)))
+                buildRoute()
+            }
+            .disabled(session.pin == nil)
+
+            if !session.favorites.isEmpty {
+                Menu("A saved place") {
+                    ForEach(session.favorites) { place in
+                        Button(place.name) {
+                            arm(workspace.addStop(place.coordinate, name: place.name))
+                            buildRoute()
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("Pick it on the map", systemImage: "hand.tap") {
+                // Placed with no coordinate yet: arming it makes the next map
+                // tap the answer.
+                let anchor = session.simulated ?? session.pin ?? session.realCoordinate
+                guard let anchor else {
+                    session.lastError = "No position yet — tap the map to drop a pin first."
+                    return
+                }
+                arm(workspace.addStop(anchor))
+            }
+        } label: {
+            Label(
+                workspace.stops.count < 2 ? "Add a point" : "Add a stop along the way",
+                systemImage: "plus.circle"
+            )
+        }
+    }
+
+    private func arm(_ stop: RouteStop) {
+        workspace.focusedStopID = stop.id
+    }
+
+    private func buildRoute() {
+        guard workspace.stops.count >= 2 else { return }
+        Task {
+            if let error = await workspace.buildRoadRoute(
+                fallbackStart: session.simulated ?? session.pin,
+                mode: session.travelMode
+            ) {
+                session.lastError = error
+            } else if let route = workspace.selectedRoute {
+                onFocus(route.coordinates)
+            }
         }
     }
 
@@ -172,15 +256,41 @@ struct RoutePlannerSheet: View {
         }
     }
 
+    /// Distance and time, plus how this one differs from the quickest.
+    ///
+    /// "12.4 km · 18:20 · avg 41 km/h" on three near-identical rows is a
+    /// reading exercise. What decides it is "+4 min, −1.2 km" — the comparison,
+    /// stated rather than left to be worked out.
     private func routeSubtitle(_ route: BuiltRoute) -> String {
         var parts = [DriveFormat.distance(route.distance)]
         if route.expectedTravelTime > 1 {
-            parts.append("Apple: " + DriveFormat.clock(route.expectedTravelTime))
+            parts.append(DriveFormat.clock(route.expectedTravelTime))
         }
         if let speed = route.expectedSpeed {
             parts.append("avg " + DriveFormat.speed(speed, unit: session.drive.units))
         }
+        if let delta = comparison(for: route) {
+            parts.append(delta)
+        }
         return parts.joined(separator: " · ")
+    }
+
+    private func comparison(for route: BuiltRoute) -> String? {
+        guard let fastest = workspace.fastestRoute, fastest.id != route.id,
+              route.expectedTravelTime > 1 else { return nil }
+
+        let seconds = route.expectedTravelTime - fastest.expectedTravelTime
+        let metres = route.distance - fastest.distance
+
+        var parts: [String] = []
+        if abs(seconds) >= 30 {
+            let minutes = Int((abs(seconds) / 60).rounded())
+            parts.append("\(seconds > 0 ? "+" : "−")\(max(1, minutes)) min")
+        }
+        if abs(metres) >= 100 {
+            parts.append("\(metres > 0 ? "+" : "−")\(DriveFormat.distance(abs(metres)))")
+        }
+        return parts.isEmpty ? "about the same" : parts.joined(separator: ", ")
     }
 
     // MARK: - Driving parameters
@@ -457,15 +567,35 @@ struct RoutePlannerSheet: View {
     // MARK: - Paths
 
     private var pathSection: some View {
-        Section("Draw & files") {
+        Section {
             Button {
                 workspace.adoptRawPath(workspace.drawnPath, named: "Drawn path")
                 workspace.drawnPath.removeAll()
                 workspace.drawMode = false
             } label: {
-                Label("Use the drawn path", systemImage: "pencil.tip")
+                Label("Use the drawn path as-is", systemImage: "pencil.tip")
             }
             .disabled(workspace.drawnPath.count < 2)
+
+            // A finger-drawn line cuts corners, crosses buildings and wanders
+            // off the carriageway; driving it produces a trace no phone has
+            // ever produced. This keeps the shape and puts it on real roads.
+            Button {
+                Task {
+                    if let error = await workspace.snapDrawnPath(mode: session.travelMode) {
+                        session.lastError = error
+                    } else if let route = workspace.selectedRoute {
+                        onFocus(route.coordinates)
+                    }
+                }
+            } label: {
+                HStack {
+                    Label("Snap the drawn path to roads", systemImage: "point.topleft.down.to.point.bottomright.curvepath.fill")
+                    Spacer()
+                    if workspace.isBuilding { ProgressView() }
+                }
+            }
+            .disabled(workspace.drawnPath.count < 2 || workspace.isBuilding)
 
             Button(action: onImportGPX) {
                 Label("Import GPX", systemImage: "square.and.arrow.down")
@@ -474,6 +604,12 @@ struct RoutePlannerSheet: View {
                 Label("Export GPX", systemImage: "square.and.arrow.up")
             }
             .disabled(!workspace.hasPlayablePath)
+        } header: {
+            Text("Draw & files")
+        } footer: {
+            if workspace.drawnPath.count >= 2 {
+                Text("Snapping routes between points taken along what you drew, so the line follows roads that exist.")
+            }
         }
     }
 

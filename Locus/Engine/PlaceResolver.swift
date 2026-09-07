@@ -84,7 +84,7 @@ final class PlaceResolver: ObservableObject {
     /// A line someone would actually say out loud: the specific part, then the
     /// town. Not the postal address, which is too long for a status bar and
     /// mostly redundant on a map.
-    private static func describe(_ placemark: CLPlacemark) -> String? {
+    static func describe(_ placemark: CLPlacemark) -> String? {
         let specific = placemark.name
             ?? [placemark.subThoroughfare, placemark.thoroughfare]
                 .compactMap { $0 }
@@ -104,6 +104,35 @@ final class PlaceResolver: ObservableObject {
         default:
             return placemark.country
         }
+    }
+}
+
+/// Names a handful of fixed points, one request at a time.
+///
+/// The resolver above tracks a single moving pin. Route stops are a different
+/// shape of problem: a small set that changes rarely and wants naming all at
+/// once. `CLGeocoder` serves one request per instance — a second cancels the
+/// first — and Apple rate-limits per app, so an actor is doing real work here
+/// rather than decorating: it queues the requests and remembers the answers.
+actor PlaceNamer {
+    static let shared = PlaceNamer()
+
+    private let geocoder = CLGeocoder()
+    private var cache: [String: String] = [:]
+
+    func name(for coordinate: CLLocationCoordinate2D) async -> String? {
+        // ~11 m of precision. Two stops that round to the same key are the same
+        // doorway, and asking twice would spend a request to learn that.
+        let key = String(format: "%.4f,%.4f", coordinate.latitude, coordinate.longitude)
+        if let cached = cache[key] { return cached }
+
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        guard let placemark = try? await geocoder.reverseGeocodeLocation(location).first,
+              let described = PlaceResolver.describe(placemark) else { return nil }
+
+        if cache.count > 300 { cache.removeAll() }
+        cache[key] = described
+        return described
     }
 }
 

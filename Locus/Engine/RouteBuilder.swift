@@ -82,6 +82,25 @@ struct BuiltRoute: Identifiable {
     }
 }
 
+enum RouteBuilderError: LocalizedError {
+    case notEnoughStops
+    case noRoute
+    /// Apple could route the rest but not this one, numbered from 1 — which is
+    /// the only part of a multi-stop failure anyone can act on.
+    case legFailed(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .notEnoughStops:
+            return "A route needs a start and an end."
+        case .noRoute:
+            return "No route found between those points."
+        case .legFailed(let leg):
+            return "Couldn’t route leg \(leg). Move that stop nearer a road and try again."
+        }
+    }
+}
+
 enum RouteBuilder {
     /// Routes `start` → `end` on real roads/footpaths, newest result first.
     ///
@@ -117,6 +136,113 @@ enum RouteBuilder {
                 expectedTravelTime: route.expectedTravelTime
             )
         }
+    }
+
+    /// Routes through an ordered list of stops, one leg at a time.
+    ///
+    /// `MKDirections` only ever answers one origin and one destination, which is
+    /// why Locus could only ever build A → B. A real commute has a school and a
+    /// petrol station in it, and a lap round a park is three corners — so the
+    /// legs are routed separately and joined.
+    ///
+    /// Alternatives are offered for a plain A → B only. Past that the choice is
+    /// between 3ⁿ combinations of legs, which is not a choice anyone can act on,
+    /// so each leg quietly takes the quickest way.
+    static func roadRoute(
+        through stops: [CLLocationCoordinate2D],
+        mode: TravelMode,
+        alternatives: Bool = true
+    ) async throws -> [BuiltRoute] {
+        guard stops.count >= 2 else {
+            throw RouteBuilderError.notEnoughStops
+        }
+        if stops.count == 2 {
+            return try await roadRoutes(from: stops[0], to: stops[1], mode: mode, alternatives: alternatives)
+        }
+
+        var coordinates: [CLLocationCoordinate2D] = []
+        var distance: CLLocationDistance = 0
+        var travelTime: TimeInterval = 0
+
+        for (index, pair) in zip(stops, stops.dropFirst()).enumerated() {
+            let legs = try await roadRoutes(from: pair.0, to: pair.1, mode: mode, alternatives: false)
+            guard let leg = legs.min(by: { $0.expectedTravelTime < $1.expectedTravelTime }) else {
+                throw RouteBuilderError.legFailed(index + 1)
+            }
+            // Every leg after the first starts where the previous one ended.
+            // Keeping both copies would leave a zero-length step for the walker
+            // to divide by when it works out a bearing.
+            coordinates += index == 0 ? leg.coordinates : Array(leg.coordinates.dropFirst())
+            distance += leg.distance
+            travelTime += leg.expectedTravelTime
+        }
+
+        guard coordinates.count > 1 else { throw RouteBuilderError.noRoute }
+
+        let intermediate = stops.count - 2
+        return [BuiltRoute(
+            name: "Via \(intermediate) stop\(intermediate == 1 ? "" : "s")",
+            coordinates: coordinates,
+            distance: distance,
+            expectedTravelTime: travelTime
+        )]
+    }
+
+    /// Pulls a finger-drawn line onto real roads.
+    ///
+    /// A drawn path is a rough intention — it cuts corners, crosses buildings
+    /// and wanders off the carriageway, and driving it produces a GPS trace no
+    /// phone has ever produced. Routing between points taken along it keeps the
+    /// shape you drew and puts it on roads that exist.
+    ///
+    /// - Parameter maximumLegs: one routing request per leg, and Apple throttles
+    ///   `MKDirections` hard, so the anchors are capped rather than following
+    ///   every wiggle. The road network fills in the detail between them.
+    static func snapToRoads(
+        path: [CLLocationCoordinate2D],
+        mode: TravelMode,
+        maximumLegs: Int = 10
+    ) async throws -> BuiltRoute {
+        let stops = anchors(along: path, maximum: maximumLegs + 1)
+        guard stops.count >= 2 else { throw RouteBuilderError.notEnoughStops }
+
+        let built = try await roadRoute(through: stops, mode: mode, alternatives: false)
+        guard let route = built.first else { throw RouteBuilderError.noRoute }
+        return BuiltRoute(
+            name: "Drawn path, on roads",
+            coordinates: route.coordinates,
+            distance: route.distance,
+            expectedTravelTime: route.expectedTravelTime
+        )
+    }
+
+    /// Evenly spaced points along a path, first and last always kept.
+    static func anchors(along path: [CLLocationCoordinate2D], maximum: Int) -> [CLLocationCoordinate2D] {
+        guard path.count > 2, maximum >= 2 else { return path }
+        guard let first = path.first, let last = path.last else { return path }
+
+        let total = zip(path, path.dropFirst()).reduce(0.0) { $0 + Geo.distance($1.0, $1.1) }
+        guard total > 1 else { return [first, last] }
+
+        let step = total / Double(maximum - 1)
+        var result = [first]
+        var travelled: CLLocationDistance = 0
+        var nextMark = step
+
+        for (a, b) in zip(path, path.dropFirst()) {
+            travelled += Geo.distance(a, b)
+            while travelled >= nextMark, result.count < maximum - 1 {
+                result.append(b)
+                nextMark += step
+            }
+        }
+
+        // The loop may already have landed on the end; routing a leg from a
+        // point to itself returns nothing useful.
+        if Geo.distance(result[result.count - 1], last) > 5 {
+            result.append(last)
+        }
+        return result
     }
 
     static func sample(polyline: MKPolyline, every meters: CLLocationDistance) -> [CLLocationCoordinate2D] {
@@ -297,17 +423,33 @@ enum GPXCodec {
         return formatter.date(from: raw) ?? fallback.date(from: raw)
     }
 
-    static func export(_ coordinates: [CLLocationCoordinate2D], name: String = "Locus Route") -> String {
+    /// - Parameter times: one per coordinate. Written as `<time>` when present,
+    ///   so exporting a recorded track and importing it back gets the pace back
+    ///   too — before, the round trip silently flattened it to a bare line.
+    static func export(
+        _ coordinates: [CLLocationCoordinate2D],
+        name: String = "Locus Route",
+        times: [Date]? = nil
+    ) -> String {
+        let stamps = times?.count == coordinates.count ? times : nil
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+
         var body = """
         <?xml version="1.0" encoding="UTF-8"?>
         <gpx version="1.1" creator="Locus" xmlns="http://www.topografix.com/GPX/1/1">
           <trk>
-            <name>\(name)</name>
+            <name>\(escaped(name))</name>
             <trkseg>
 
         """
-        for c in coordinates {
-            body += String(format: "      <trkpt lat=\"%.6f\" lon=\"%.6f\"></trkpt>\n", c.latitude, c.longitude)
+        for (index, c) in coordinates.enumerated() {
+            let point = String(format: "      <trkpt lat=\"%.6f\" lon=\"%.6f\">", c.latitude, c.longitude)
+            if let stamps {
+                body += point + "<time>\(formatter.string(from: stamps[index]))</time></trkpt>\n"
+            } else {
+                body += point + "</trkpt>\n"
+            }
         }
         body += """
             </trkseg>
@@ -315,5 +457,13 @@ enum GPXCodec {
         </gpx>
         """
         return body
+    }
+
+    /// A route named "Bob & Alice's <run>" would otherwise produce a GPX no
+    /// parser will open.
+    private static func escaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 }
