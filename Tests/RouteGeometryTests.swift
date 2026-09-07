@@ -190,3 +190,43 @@ final class RouteShapeTests: XCTestCase {
         }
     }
 }
+
+/// Coordinates that arrive from outside the app.
+///
+/// `CLLocationCoordinate2D` is a C struct and will hold latitude 1234 without
+/// complaint — after which the map, the projection maths and the location FFI
+/// are all working with a point that doesn't exist. GPX import is the path that
+/// matters: a file from elsewhere, parsed with a regex that takes whatever
+/// `Double(_:)` accepts.
+final class CoordinateValidityTests: XCTestCase {
+    func testRealCoordinatesSurvive() {
+        XCTAssertNotNil(Geo.validCoordinate(latitude: 48.85837, longitude: 2.29448))
+        XCTAssertNotNil(Geo.validCoordinate(latitude: 0, longitude: 0))
+        XCTAssertNotNil(Geo.validCoordinate(latitude: -33.86, longitude: 151.21))
+    }
+
+    /// The corners are real places — the poles and the antimeridian — so they
+    /// have to pass, not be rejected as suspicious.
+    func testTheExtremesAreValid() {
+        for (lat, lon) in [(90.0, 180.0), (-90.0, -180.0), (90.0, -180.0), (-90.0, 180.0)] {
+            XCTAssertNotNil(Geo.validCoordinate(latitude: lat, longitude: lon), "\(lat), \(lon)")
+        }
+    }
+
+    func testOutOfRangeIsRejected() {
+        XCTAssertNil(Geo.validCoordinate(latitude: 91, longitude: 0))
+        XCTAssertNil(Geo.validCoordinate(latitude: -90.1, longitude: 0))
+        XCTAssertNil(Geo.validCoordinate(latitude: 0, longitude: 180.5))
+        XCTAssertNil(Geo.validCoordinate(latitude: 1234, longitude: 5678))
+    }
+
+    /// Every comparison against NaN is false, so it fails the range test
+    /// without needing a case of its own — but that is worth pinning down,
+    /// because it reads like an oversight.
+    func testNaNAndInfinityAreRejected() {
+        XCTAssertNil(Geo.validCoordinate(latitude: .nan, longitude: 0))
+        XCTAssertNil(Geo.validCoordinate(latitude: 0, longitude: .nan))
+        XCTAssertNil(Geo.validCoordinate(latitude: .infinity, longitude: 0))
+        XCTAssertNil(Geo.validCoordinate(latitude: 0, longitude: -.infinity))
+    }
+}

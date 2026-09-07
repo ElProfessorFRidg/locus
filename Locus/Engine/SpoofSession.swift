@@ -393,7 +393,10 @@ final class SpoofSession: ObservableObject {
 
         let nx = joystickVector.dx / magnitude
         let ny = -joystickVector.dy / magnitude
-        let jitter = 1 + Double.random(in: -1...1) * drive.speedJitter
+        // Clamped exactly as the route walker clamps the same parameter. Left
+        // open, a stored jitter above 1 makes the multiplier negative, and the
+        // joystick drives you backwards at random.
+        let jitter = (1 + Double.random(in: -1...1) * drive.speedJitter).clamped(to: 0.5...1.5)
         let speed = joystickTopSpeed * min(1.0, magnitude) * jitter
         let dt = 0.25
         let meters = speed * dt

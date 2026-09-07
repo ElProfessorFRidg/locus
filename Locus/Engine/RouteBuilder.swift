@@ -423,8 +423,9 @@ enum GPXCodec {
                   let latR = Range(match.range(at: 1), in: text),
                   let lonR = Range(match.range(at: 2), in: text),
                   let lat = Double(text[latR]),
-                  let lon = Double(text[lonR]) else { return }
-            coords.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+                  let lon = Double(text[lonR]),
+                  let point = Geo.validCoordinate(latitude: lat, longitude: lon) else { return }
+            coords.append(point)
         }
         // Also support lon before lat
         if coords.isEmpty {
@@ -435,8 +436,9 @@ enum GPXCodec {
                       let lonR = Range(match.range(at: 1), in: text),
                       let latR = Range(match.range(at: 2), in: text),
                       let lon = Double(text[lonR]),
-                      let lat = Double(text[latR]) else { return }
-                coords.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+                      let lat = Double(text[latR]),
+                      let point = Geo.validCoordinate(latitude: lat, longitude: lon) else { return }
+                coords.append(point)
             }
         }
         guard !coords.isEmpty else {
@@ -537,7 +539,7 @@ enum GPXCodec {
             return Double(attributes[range])
         }
         guard let lat = number("lat"), let lon = number("lon") else { return nil }
-        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        return Geo.validCoordinate(latitude: lat, longitude: lon)
     }
 
     private static func timeFrom(

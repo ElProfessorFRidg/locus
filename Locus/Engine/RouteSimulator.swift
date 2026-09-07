@@ -897,6 +897,22 @@ private struct GaussianSource {
 enum Geo {
     static let earthRadius = 6_378_137.0
 
+    /// A coordinate, or nothing if those numbers aren't one.
+    ///
+    /// `CLLocationCoordinate2D` is a C struct: it will hold latitude 1234
+    /// without complaint, and everything downstream — the map, the projection
+    /// maths, the location FFI — is then working with a point that doesn't
+    /// exist. Nothing checked, and GPX import is a file from outside the app,
+    /// parsed with a regex that takes whatever `Double(_:)` accepts.
+    ///
+    /// NaN is rejected by the same comparison: every comparison against NaN is
+    /// false, so it fails the range test without a special case.
+    static func validCoordinate(latitude: Double, longitude: Double) -> CLLocationCoordinate2D? {
+        guard latitude >= -90, latitude <= 90,
+              longitude >= -180, longitude <= 180 else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
     static func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> CLLocationDistance {
         CLLocation(latitude: a.latitude, longitude: a.longitude)
             .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
