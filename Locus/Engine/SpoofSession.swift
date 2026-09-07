@@ -130,6 +130,17 @@ final class SpoofSession: ObservableObject {
     private var toastTask: Task<Void, Never>?
     private let locationKeeper = BackgroundKeepAlive()
 
+    /// Kept rather than built per fix: a generator is an object with a Taptic
+    /// Engine connection behind it, and making one for every buzz is both an
+    /// allocation and the reason `prepare()` exists.
+    private let limitHaptic = UIImpactFeedbackGenerator(style: .rigid)
+    /// Whether the last fix was over the limit, so the haptic fires on the
+    /// crossing — which is what `hapticOnLimitChange` says it does. It was
+    /// firing on *every* fix while over the limit instead: four buzzes a second
+    /// for as long as you were speeding, which is a battery drain and, on a
+    /// motorway stretch, several thousand of them.
+    private var wasOverLimit = false
+
     /// Reverse-geocodes the pin so coordinates aren't the only thing on screen.
     /// Owned here rather than by a view so a starred favourite can be named
     /// after the place instead of its latitude.
@@ -242,7 +253,7 @@ final class SpoofSession: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             guard await self.prepareTunnel() else { return }
-            await self.apply(coordinate, pairing: pairing, markRecent: true)
+            await self.apply(coordinate, pairing: pairing, markRecent: true, interactive: true)
         }
     }
 
@@ -343,7 +354,7 @@ final class SpoofSession: ObservableObject {
             guard let self else { return }
             guard await self.prepareTunnel() else { return }
             if self.simulated == nil {
-                await self.apply(start, pairing: pairing, markRecent: false)
+                await self.apply(start, pairing: pairing, markRecent: false, interactive: true)
             }
             self.joystickActive = true
             self.joystick = JoystickTelemetry()
@@ -567,6 +578,7 @@ final class SpoofSession: ObservableObject {
         telemetry = nil
         isRoutePaused = false
         routeCountdown = nil
+        wasOverLimit = false
         LiveActivityController.shared.end()
         if !keepResumePoint { routeStore.clearResume() }
         refreshIdleTimer()
@@ -653,8 +665,11 @@ final class SpoofSession: ObservableObject {
                     totalDistance: walker.totalDistance
                 )
 
-                if fix.isOverLimit, profile.hapticOnLimitChange {
-                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.4)
+                if fix.isOverLimit != wasOverLimit {
+                    wasOverLimit = fix.isOverLimit
+                    if fix.isOverLimit, profile.hapticOnLimitChange {
+                        limitHaptic.impactOccurred(intensity: 0.4)
+                    }
                 }
 
                 if profile.showLiveActivity, let telemetry {
@@ -852,18 +867,28 @@ final class SpoofSession: ObservableObject {
     /// The suspension is the whole point: the engine call is a round trip over
     /// the tunnel, and it used to run synchronously from the main actor — so
     /// the map froze for its duration on every fix.
-    private func apply(_ coordinate: CLLocationCoordinate2D, pairing: PairingStore, markRecent: Bool) async {
+    /// - Parameter interactive: whether this fix is one somebody is waiting on.
+    ///   `isBusy` only disables the Teleport button, and a route or the joystick
+    ///   sets it true and false again several times a second — two published
+    ///   changes per fix, each of which invalidates every view watching the
+    ///   session, including the map and its route overlay.
+    private func apply(
+        _ coordinate: CLLocationCoordinate2D,
+        pairing: PairingStore,
+        markRecent: Bool,
+        interactive: Bool = false
+    ) async {
         if status == .idle || status.isDropped {
             status = .connecting
         }
-        isBusy = true
+        if interactive { isBusy = true }
         let result = await LocationEngine.set(
             latitude: coordinate.latitude,
             longitude: coordinate.longitude,
             pairingPath: pairing.pairingPath,
             deviceIP: TunnelConfig.targetIP
         )
-        isBusy = false
+        if interactive { isBusy = false }
         switch result {
         case .success:
             simulated = coordinate
@@ -895,8 +920,13 @@ final class SpoofSession: ObservableObject {
         }
     }
 
+    /// Both timers are started from `apply`, which runs up to four times a
+    /// second for the length of a route — so they used to be torn down and
+    /// rebuilt eight times a second, each rebuild an allocation and two run-loop
+    /// edits. The one already running is the one we want; `stopResend` /
+    /// `stopHealth` are what end them.
     private func startResend(pairing: PairingStore) {
-        resendTimer?.invalidate()
+        guard resendTimer == nil else { return }
         resendTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let sim = self.simulated else { return }
@@ -919,7 +949,7 @@ final class SpoofSession: ObservableObject {
     }
 
     private func startHealth(pairing: PairingStore) {
-        healthTimer?.invalidate()
+        guard healthTimer == nil else { return }
         healthTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let sim = self.simulated else { return }

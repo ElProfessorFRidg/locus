@@ -9,6 +9,7 @@ struct LocusApp: App {
     @StateObject private var pairing = PairingStore.shared
     @AppStorage(SetupGate.defaultsKey) private var setupComplete = false
     @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Map when setup finished, or when already paired outside this walkthrough.
     private var showMap: Bool {
@@ -39,6 +40,11 @@ struct LocusApp: App {
                     SetupGate.markComplete()
                     setupComplete = true
                 }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // Profile edits are coalesced while a slider is moving. Leaving
+                // the foreground is the moment that window has to close.
+                if phase != .active { session.profiles.flush() }
             }
         }
     }

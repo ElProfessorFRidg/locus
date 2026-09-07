@@ -44,6 +44,9 @@ struct MapHomeView: View {
     /// into "put it here" rather than "move the teleport pin".
     @State private var routePlacementHint: String?
 
+    /// Coalesces preview rebuilds — see `refreshPreview`.
+    @State private var previewTask: Task<Void, Never>?
+
     @Namespace private var chromeGlass
 
     private var mapStyle: MapStyle {
@@ -1064,8 +1067,23 @@ struct MapHomeView: View {
         }
     }
 
+    /// Rebuilds the coloured stretches and the route outline, once the changes
+    /// stop arriving.
+    ///
+    /// This runs the whole planner — resample, corner radius and turn density at
+    /// every point, junction stops, the moving average over all of it — across
+    /// the entire route, on the main actor. And it is wired to `session.drive`,
+    /// which changes on *every frame* of a slider drag in the driving settings:
+    /// a forty-kilometre route was being replanned sixty times a second while a
+    /// finger moved, for one picture at the end of it. Coalescing collapses that
+    /// to a single rebuild without changing what finally gets drawn.
     private func refreshPreview() {
-        workspace.refreshPreview(profile: session.drive, mode: session.travelMode)
+        previewTask?.cancel()
+        previewTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            workspace.refreshPreview(profile: session.drive, mode: session.travelMode)
+        }
     }
 
     private func playRoute() {
