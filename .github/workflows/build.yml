@@ -16,9 +16,13 @@ permissions:
 
 concurrency:
   group: build-${{ github.ref }}
-  # A build in flight is publishing to a release; cancelling it mid-upload
-  # leaves that release without its .ipa.
-  cancel-in-progress: false
+  # Supersede rather than queue. The original worry was that cancelling a build
+  # mid-upload leaves its release without an .ipa — but the run that supersedes
+  # it deletes and recreates that release wholesale, so the gap closes itself.
+  #
+  # Queueing had a worse failure: one job that hangs blocks every push behind it
+  # for the six-hour default timeout, including the push that fixes the hang.
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -27,6 +31,10 @@ jobs:
     # still have to exist at build time — an Xcode 16 runner fails outright
     # rather than falling back.
     runs-on: macos-26
+    # The default is six hours. Nothing here legitimately takes more than a few
+    # minutes, so a job past this is stuck and should say so rather than hold a
+    # runner all afternoon.
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +49,10 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      # coreutils is here for `gtimeout`: macOS ships no GNU `timeout`, and a
+      # test step that can hang needs one.
       - name: Install build tools
-        run: brew install xcodegen xcbeautify
+        run: brew install xcodegen xcbeautify coreutils
 
       # project.yml is the source of truth; the committed Locus.xcodeproj is a
       # generated artifact that goes stale whenever a target or file moves.
@@ -66,25 +76,43 @@ jobs:
       # device-only static library, so anything hosted by it can't run on a
       # simulator at all. See the LocusTests target in project.yml.
       - name: Test the logic
+        timeout-minutes: 20
         run: |
           set -euo pipefail
-          SIM=$(xcrun simctl list devices available --json \
-            | python3 -c "
+
+          # By UDID, not by name. A name can match several devices across
+          # installed runtimes, and an ambiguous `-destination` is one of the
+          # ways xcodebuild sits there instead of failing.
+          read -r UDID LABEL < <(xcrun simctl list devices available --json | python3 -c "
           import json, sys
-          devices = json.load(sys.stdin)['devices']
-          names = [d['name'] for runtime in devices.values() for d in runtime]
-          for want in ('iPhone 17 Pro', 'iPhone 17', 'iPhone 16 Pro', 'iPhone 16'):
-              if want in names:
-                  print(want); break
-          else:
-              print(next((n for n in names if n.startswith('iPhone')), ''))
+          best = None
+          for runtime, devices in json.load(sys.stdin)['devices'].items():
+              if 'iOS' not in runtime:
+                  continue
+              for device in devices:
+                  if not device.get('isAvailable') or not device['name'].startswith('iPhone'):
+                      continue
+                  # Highest runtime wins, then the later-sorting device name.
+                  key = (runtime, device['name'])
+                  if best is None or key > best[0]:
+                      best = (key, device['udid'], f\"{device['name']} ({runtime.split('.')[-1]})\")
+          print(f'{best[1]} {best[2]}' if best else '')
           ")
-          test -n "$SIM" || { echo '::error::No iPhone simulator available'; exit 1; }
-          echo "Testing on $SIM"
-          xcodebuild test \
+          test -n "${UDID:-}" || { echo '::error::No iPhone simulator available'; exit 1; }
+          echo "Testing on $LABEL — $UDID"
+
+          # Boot it ourselves and wait for it. Letting xcodebuild boot the
+          # simulator is where the first run of this step hung: it waits on the
+          # device without a deadline, and `bootstatus` is the supported way to
+          # block until it is actually ready.
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          gtimeout 300 xcrun simctl bootstatus "$UDID" -b
+
+          gtimeout 900 xcodebuild test \
             -project Locus.xcodeproj \
             -scheme LocusTests \
-            -destination "platform=iOS Simulator,name=$SIM" \
+            -destination "id=$UDID" \
+            -destination-timeout 120 \
             CODE_SIGNING_ALLOWED=NO \
             | xcbeautify
 
