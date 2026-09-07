@@ -5,51 +5,6 @@ import MapKit
 import UIKit
 import UserNotifications
 
-enum TravelMode: String, CaseIterable, Identifiable {
-    case walk, run, cycle, drive
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .walk: return "Walk"
-        case .run: return "Run"
-        case .cycle: return "Cycle"
-        case .drive: return "Drive"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .walk: return "figure.walk"
-        case .run: return "figure.run"
-        case .cycle: return "bicycle"
-        case .drive: return "car.fill"
-        }
-    }
-
-    /// Base metres per second before natural variation.
-    var baseSpeed: CLLocationSpeed {
-        switch self {
-        case .walk: return 1.4
-        case .run: return 3.3
-        case .cycle: return 6.5
-        case .drive: return 13.4
-        }
-    }
-
-    var mkTransportType: MKDirectionsTransportType {
-        switch self {
-        case .walk, .run: return .walking
-        case .cycle, .drive: return .automobile
-        }
-    }
-
-    /// Only driving gets the full parameter set; the rest borrow the physics but
-    /// the UI leads with different defaults.
-    var usesRoadLimits: Bool { self == .drive || self == .cycle }
-}
-
 enum SpoofStatus: Equatable {
     case idle
     case connecting
@@ -102,24 +57,6 @@ struct TripSummary: Identifiable, Equatable {
     var averageSpeed: CLLocationSpeed {
         simulatedSeconds > 1 ? distance / simulatedSeconds : 0
     }
-}
-
-/// Live state of a route being driven, for the HUD.
-struct DriveTelemetry: Equatable {
-    var speed: CLLocationSpeed = 0
-    /// Estimated posted limit here, or `nil` when not driving to limits.
-    var speedLimit: CLLocationSpeed?
-    var course: CLLocationDirection = 0
-    var progress: Double = 0
-    var distanceTravelled: CLLocationDistance = 0
-    var distanceRemaining: CLLocationDistance = 0
-    /// Simulated seconds — with `timeScale` above 1 this runs ahead of the clock.
-    var elapsed: TimeInterval = 0
-    var isStopped = false
-    var isOverLimit = false
-    /// 1 on the first pass, 2 on the way back, and so on.
-    var lap: Int = 1
-    var totalDistance: CLLocationDistance = 0
 }
 
 @MainActor

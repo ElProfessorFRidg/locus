@@ -98,6 +98,38 @@ targets:
         SUPPORTS_MACCATALYST: NO
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 
+  # Logic tests, with no host application on purpose.
+  #
+  # The app links `Vendor/idevice`, an arm64 device-only static library, so
+  # anything hosted by it cannot build for a simulator — and a test bundle you
+  # can only run on a paired iPhone is a test bundle nobody runs. Instead this
+  # target compiles the pure files directly: no UIKit, no SwiftUI, no FFI, and
+  # nothing that needs a device to be true.
+  #
+  # That constraint is why `TravelMode` and `DriveFormat` have their own files
+  # now. Both were pure types trapped inside `SpoofSession.swift` and a SwiftUI
+  # view, which dragged the whole engine in behind them.
+  LocusTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      - path: Locus/Support/CoordinateParser.swift
+      - path: Locus/Support/DriveFormat.swift
+      - path: Locus/Support/SavedPlace.swift
+      - path: Locus/Engine/TravelMode.swift
+      - path: Locus/Engine/DriveTelemetry.swift
+      - path: Locus/Engine/DriveProfile.swift
+      - path: Locus/Engine/RouteBuilder.swift
+      - path: Locus/Engine/RouteSimulator.swift
+      - path: Locus/Engine/RouteStorage.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus.tests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGNING_ALLOWED: NO
+        SUPPORTS_MACCATALYST: NO
+
   # Live Activity for a route in progress. Unlike the tunnel, a widget extension
   # needs no special entitlement, so this one survives a free-account re-sign.
   LocusWidgets:

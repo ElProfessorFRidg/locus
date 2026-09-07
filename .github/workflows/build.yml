@@ -59,6 +59,35 @@ jobs:
           echo "version=${VERSION:-0.0.0}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
+      # Runs before the archive: a failing assertion should stop the build
+      # rather than publish an IPA nobody has reason to trust.
+      #
+      # The test bundle is hosted by nothing on purpose — the app links a
+      # device-only static library, so anything hosted by it can't run on a
+      # simulator at all. See the LocusTests target in project.yml.
+      - name: Test the logic
+        run: |
+          set -euo pipefail
+          SIM=$(xcrun simctl list devices available --json \
+            | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          names = [d['name'] for runtime in devices.values() for d in runtime]
+          for want in ('iPhone 17 Pro', 'iPhone 17', 'iPhone 16 Pro', 'iPhone 16'):
+              if want in names:
+                  print(want); break
+          else:
+              print(next((n for n in names if n.startswith('iPhone')), ''))
+          ")
+          test -n "$SIM" || { echo '::error::No iPhone simulator available'; exit 1; }
+          echo "Testing on $SIM"
+          xcodebuild test \
+            -project Locus.xcodeproj \
+            -scheme LocusTests \
+            -destination "platform=iOS Simulator,name=$SIM" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify
+
       # Unsigned: this IPA is re-signed locally with AltStore / SideStore /
       # Feather / Sideloadly / ESign before installing. Entitlements aren't
       # applied to an unsigned build, which is exactly why the app reads its own
