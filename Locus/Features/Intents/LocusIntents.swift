@@ -294,9 +294,6 @@ struct DriveSavedRouteIntent: AppIntent {
             recordedSpeed: built.recordedSpeedSampler(),
             recordedTimes: built.recordedTimes
         )
-        // Counted here as well as in the app, so "most driven" stays true
-        // however the drive was started.
-        session.routeStore.markDriven(saved.id)
 
         // `startRoute`'s own refusals — no pairing file, too few points — land
         // in `lastError` before it returns, so they are caught here. Anything
@@ -306,6 +303,10 @@ struct DriveSavedRouteIntent: AppIntent {
         if let error = session.lastError {
             throw LocusIntentError.failed(error)
         }
+
+        // Counted here as well as in the app, so "most driven" stays true
+        // however the drive was started — and only once it actually has.
+        session.routeStore.markDriven(saved.id)
 
         let journey = saved.journey.map { " (\($0))" } ?? ""
         return .result(dialog: "Driving \(saved.name)\(journey).")

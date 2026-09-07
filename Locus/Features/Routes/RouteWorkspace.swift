@@ -495,11 +495,9 @@ extension SpoofSession {
             lastError = "Find a route, draw one, or import a GPX file first."
             return
         }
-        // Counted here rather than at each call site: three places start a
-        // drive, and "most driven" is only useful if all three agree.
-        if let savedID = workspace.savedRouteID {
-            routeStore.markDriven(savedID)
-        }
+        // A stale failure from earlier would otherwise read as this drive's,
+        // and would make the count below refuse a drive that did start.
+        lastError = nil
         startRoute(
             workspace.activeCoordinates,
             pairing: pairing,
@@ -509,5 +507,14 @@ extension SpoofSession {
             recordedSpeed: workspace.recordedSpeedSampler,
             recordedTimes: workspace.selectedRoute?.recordedTimes
         )
+        // Counted here rather than at each call site: three places start a
+        // drive, and "most driven" is only useful if all three agree. After
+        // `startRoute`, not before: it refuses synchronously when there's no
+        // pairing file, and tapping Drive five times with the tunnel down
+        // would otherwise put a route at the top of "most driven" without it
+        // ever having been driven.
+        if lastError == nil, let savedID = workspace.savedRouteID {
+            routeStore.markDriven(savedID)
+        }
     }
 }
