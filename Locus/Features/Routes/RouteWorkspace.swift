@@ -69,6 +69,9 @@ final class RouteWorkspace: ObservableObject {
     /// overlay draws and what the corrections list edits.
     @Published private(set) var stretches: [RoutePlan.Stretch] = []
     @Published private(set) var previewUsesLimits = false
+    /// What the drive will involve — stops, waiting, the speed band, the bends
+    /// the grip budget decides. Computed with the preview, from the same plan.
+    @Published private(set) var outline: RoutePlan.Outline?
 
     /// Set when the current route came from the saved list, so corrections can
     /// be written back to it.
@@ -192,6 +195,7 @@ final class RouteWorkspace: ObservableObject {
         overrides = []
         stretches = []
         previewUsesLimits = false
+        outline = nil
     }
 
     // MARK: - Selection
@@ -328,6 +332,7 @@ final class RouteWorkspace: ObservableObject {
         guard coordinates.count > 1 else {
             stretches = []
             previewUsesLimits = false
+            outline = nil
             return
         }
 
@@ -341,6 +346,7 @@ final class RouteWorkspace: ObservableObject {
         )
         stretches = plan.stretches()
         previewUsesLimits = plan.usesEstimatedLimits
+        outline = plan.outline()
     }
 
     // MARK: - Overrides
@@ -460,6 +466,11 @@ extension SpoofSession {
         guard workspace.hasPlayablePath else {
             lastError = "Find a route, draw one, or import a GPX file first."
             return
+        }
+        // Counted here rather than at each call site: three places start a
+        // drive, and "most driven" is only useful if all three agree.
+        if let savedID = workspace.savedRouteID {
+            routeStore.markDriven(savedID)
         }
         startRoute(
             workspace.activeCoordinates,

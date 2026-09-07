@@ -154,6 +154,44 @@ final class PersistenceTests: XCTestCase {
         XCTAssertNil(route.built.recordedTimes)
     }
 
+    /// The same legacy payload again, now that the endpoint names and the drive
+    /// counter exist. Adding a field to a stored type is the single easiest way
+    /// to silently wipe everyone's saved routes.
+    func testLegacySavedRouteWithoutJourneyFieldsDecodes() throws {
+        let json = """
+        {"id":"7C6C8A2E-9C2F-4C0A-9A1E-9C1F2A3B4C5D",
+         "name":"Commute",
+         "coordinates":[{"latitude":48.1,"longitude":2.1},{"latitude":48.2,"longitude":2.2}],
+         "distance":1200.0,
+         "expectedTravelTime":300.0,
+         "overrides":[],
+         "createdAt":760000000.0}
+        """
+        let route = try JSONDecoder().decode(SavedRoute.self, from: Data(json.utf8))
+        XCTAssertNil(route.startName)
+        XCTAssertNil(route.endName)
+        XCTAssertNil(route.lastDrivenAt)
+        XCTAssertEqual(route.driveCount, 0)
+        XCTAssertNil(route.journey, "a route with no known ends should show no journey line")
+    }
+
+    func testJourneyReadsFromWhicheverEndsAreKnown() {
+        var route = SavedRoute(
+            name: "Commute",
+            route: BuiltRoute(name: "Commute", coordinates: [], distance: 1, expectedTravelTime: 1)
+        )
+        XCTAssertNil(route.journey)
+
+        route.startName = "Home"
+        XCTAssertEqual(route.journey, "from Home")
+
+        route.endName = "Office"
+        XCTAssertEqual(route.journey, "Home → Office")
+
+        route.startName = nil
+        XCTAssertEqual(route.journey, "to Office")
+    }
+
     func testExpectedSpeedIsNilWithoutTiming() {
         let route = SavedRoute(
             name: "Drawn",

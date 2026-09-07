@@ -80,6 +80,53 @@ struct RoutePlan {
         }
     }
 
+    /// What driving this plan will actually involve, in the terms you'd want
+    /// before committing forty minutes to it.
+    ///
+    /// Every number here was already computed and thrown away — the planner
+    /// decided the stops and the ceilings, and the only way to find out how many
+    /// there were was to drive it and count.
+    struct Outline: Equatable {
+        /// Junctions the car will sit at, excluding the arrival stop.
+        var stops: Int
+        /// Total seconds it will spend stationary at them.
+        var waiting: TimeInterval
+        /// Fastest and slowest the plan permits, m/s.
+        var fastest: CLLocationSpeed
+        var slowest: CLLocationSpeed
+        /// Corners tight enough that the grip budget, not the limit, decides
+        /// the speed — the bends you will actually feel.
+        var gripLimitedCorners: Int
+    }
+
+    func outline() -> Outline {
+        // The final point is always a stop because you arrive; counting it
+        // would report a junction that isn't one.
+        let junctions = points.dropLast().filter(\.isStop)
+        let ceilings = points.map(\.ceiling).filter { $0 > 0.1 && $0 < .greatestFiniteMagnitude }
+
+        // A ceiling meaningfully under the limit means the corner won, not the
+        // sign. The plan holds a point every 8 m, so a single sweeping bend is
+        // dozens of qualifying points: a new corner is only counted after 80 m
+        // of road that isn't one. The marker advances on every qualifying
+        // sample rather than only on a counted one — anchoring it to the bend's
+        // first point instead splits any corner longer than 80 m in two.
+        var corners = 0
+        var lastCornerDistance = -Double.greatestFiniteMagnitude
+        for point in points where point.ceiling < point.limit * 0.85 {
+            if point.distance - lastCornerDistance > 80 { corners += 1 }
+            lastCornerDistance = point.distance
+        }
+
+        return Outline(
+            stops: junctions.count,
+            waiting: junctions.reduce(0) { $0 + $1.dwell },
+            fastest: ceilings.max() ?? 0,
+            slowest: ceilings.min() ?? 0,
+            gripLimitedCorners: corners
+        )
+    }
+
     /// Consecutive points sharing a limit, with short runs folded into their
     /// neighbour — a 20 m blip between two 90 stretches is sampling noise, not
     /// a road anyone would describe.

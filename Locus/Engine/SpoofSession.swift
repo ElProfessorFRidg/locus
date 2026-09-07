@@ -154,6 +154,10 @@ final class SpoofSession: ObservableObject {
         favorites = SavedPlace.load(key: favoritesKey)
         recents = SavedPlace.load(key: recentsKey)
 
+        // The store keeps routes; it doesn't know how to name a place. Handed
+        // the geocoder here so a saved route can say where it runs between.
+        routeStore.nameResolver = { await PlaceNamer.shared.name(for: $0) }
+
         // Nested ObservableObjects don't propagate: views watching the session
         // would never redraw when an address resolves or a profile is renamed.
         for nested in [

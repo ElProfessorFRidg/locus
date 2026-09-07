@@ -130,7 +130,13 @@ struct RootView: View {
 
     private func saveDrivenRoute() {
         guard let route = workspace.selectedRoute else { return }
-        session.routeStore.save(route, named: route.name, overrides: workspace.overrides)
+        session.routeStore.save(
+            route,
+            named: route.name,
+            overrides: workspace.overrides,
+            startName: workspace.stops.first?.name,
+            endName: workspace.stops.count >= 2 ? workspace.stops[workspace.stops.count - 1].name : nil
+        )
         session.flash("Saved “\(route.name)”")
     }
 }

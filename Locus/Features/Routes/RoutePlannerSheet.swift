@@ -19,6 +19,8 @@ struct RoutePlannerSheet: View {
     /// Non-nil while a saved route is being renamed.
     @State private var renamingRouteID: UUID?
     @State private var renameText = ""
+    @State private var savedFilter = ""
+    @State private var savedOrder: SavedRouteOrder = .recent
 
     var body: some View {
         NavigationStack {
@@ -370,6 +372,10 @@ struct RoutePlannerSheet: View {
                     Label("Stop driving", systemImage: "stop.fill")
                 }
             }
+
+            if let outline = workspace.outline, workspace.hasPlayablePath {
+                outlineRow(outline)
+            }
         } footer: {
             if let summary = workspace.summary {
                 Text(summary + estimatedDurationSuffix)
@@ -377,6 +383,66 @@ struct RoutePlannerSheet: View {
                 Text("Find a route above, draw one on the map, or import a GPX file.")
             }
         }
+    }
+
+    /// What the drive will involve, before you commit forty minutes to it.
+    ///
+    /// The planner already decided every one of these — how many junctions it
+    /// will sit at, how long for, the speed band, which bends the grip budget
+    /// rather than the sign decides — and then threw them away. The only way to
+    /// find out was to drive it and count.
+    private func outlineRow(_ outline: RoutePlan.Outline) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 0) {
+                outlineStat(
+                    "\(outline.stops)",
+                    outline.stops == 1 ? "stop" : "stops",
+                    systemImage: "hand.raised.fill"
+                )
+                outlineStat(
+                    DriveFormat.clock(outline.waiting),
+                    "waiting",
+                    systemImage: "hourglass"
+                )
+                outlineStat(
+                    "\(outline.gripLimitedCorners)",
+                    outline.gripLimitedCorners == 1 ? "real bend" : "real bends",
+                    systemImage: "arrow.triangle.turn.up.right.diamond.fill"
+                )
+            }
+
+            if let band = speedBand(outline) {
+                Text(band)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// Built outside the view builder: an interpolation with two formatter calls
+    /// inside a result builder is the sort of expression that quietly doubles a
+    /// build. Nil when the plan holds one speed throughout, where a range would
+    /// only be noise.
+    private func speedBand(_ outline: RoutePlan.Outline) -> String? {
+        guard outline.slowest > 0.1, outline.fastest > outline.slowest + 0.5 else { return nil }
+        let unit = session.drive.units
+        let slowest = DriveFormat.speed(outline.slowest, unit: unit)
+        let fastest = DriveFormat.speed(outline.fastest, unit: unit)
+        return "Speeds between " + slowest + " and " + fastest + "."
+    }
+
+    private func outlineStat(_ value: String, _ caption: String, systemImage: String) -> some View {
+        VStack(spacing: 2) {
+            Label(value, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .labelStyle(.titleAndIcon)
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     /// How long the playback will actually take, which is not Apple's estimate
@@ -493,44 +559,41 @@ struct RoutePlannerSheet: View {
                 }
             }
 
-            ForEach(session.routeStore.routes) { saved in
-                Button {
-                    workspace.adopt(saved: saved)
-                    onFocus(saved.coordinates.clLocations)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(saved.name).foregroundStyle(.primary)
-                            Text(savedSubtitle(saved))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if workspace.savedRouteID == saved.id {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(LocusTheme.accent)
-                        }
+            // Only once the list is long enough that scanning it stops working.
+            if session.routeStore.routes.count > 4 {
+                Picker("Order", selection: $savedOrder) {
+                    ForEach(SavedRouteOrder.allCases) { order in
+                        Text(order.title).tag(order)
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        session.routeStore.delete(saved.id)
-                    } label: {
-                        Label("Delete", systemImage: "trash.fill")
+                .pickerStyle(.segmented)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Filter by name or place", text: $savedFilter)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !savedFilter.isEmpty {
+                        Button {
+                            savedFilter = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    // Profiles could be renamed and routes couldn't, so a
-                    // commute saved as "Route" stayed "Route" — or had to be
-                    // deleted and rebuilt to get a name that meant something.
-                    Button {
-                        renamingRouteID = saved.id
-                        renameText = saved.name
-                    } label: {
-                        Label("Rename", systemImage: "pencil")
-                    }
-                    .tint(.gray)
                 }
+            }
+
+            ForEach(visibleSavedRoutes) { saved in
+                savedRouteRow(saved)
+            }
+
+            if !savedFilter.isEmpty, visibleSavedRoutes.isEmpty {
+                Text("Nothing matches “\(savedFilter)”.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Saved routes")
@@ -544,7 +607,16 @@ struct RoutePlannerSheet: View {
             Button("Cancel", role: .cancel) {}
             Button("Save") {
                 guard let route = workspace.selectedRoute else { return }
-                session.routeStore.save(route, named: draftName, overrides: workspace.overrides)
+                // The stops already carry resolved names when they came from a
+                // search or a geocode; passing them spares two requests and
+                // gets the list labelled immediately rather than a beat later.
+                session.routeStore.save(
+                    route,
+                    named: draftName,
+                    overrides: workspace.overrides,
+                    startName: workspace.stops.first?.name,
+                    endName: workspace.stops.count >= 2 ? workspace.stops[workspace.stops.count - 1].name : nil
+                )
             }
         }
         .alert("Rename route", isPresented: Binding(
@@ -560,6 +632,93 @@ struct RoutePlannerSheet: View {
                 renamingRouteID = nil
             }
         }
+    }
+
+    /// One saved route: its own shape, where it runs between, and the numbers.
+    ///
+    /// The shape is doing the work. You recognise your commute's outline the way
+    /// you recognise a signature, and a column of "12.4 km · 3 Sept" rows gives
+    /// you nothing to recognise.
+    private func savedRouteRow(_ saved: SavedRoute) -> some View {
+        let isLoaded = workspace.savedRouteID == saved.id
+
+        return Button {
+            workspace.adopt(saved: saved)
+            onFocus(saved.coordinates.clLocations)
+        } label: {
+            HStack(spacing: 12) {
+                RouteShapeThumbnail(
+                    coordinates: saved.coordinates,
+                    tint: isLoaded ? LocusTheme.accent : .secondary
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(saved.name)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if let journey = saved.journey {
+                        Text(journey)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Text(savedSubtitle(saved))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                if isLoaded {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(LocusTheme.accent)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            // The commonest thing to want from this list is to drive the thing,
+            // and that used to be load it, close the sheet, find Drive.
+            Button {
+                workspace.adopt(saved: saved)
+                onPlay()
+            } label: {
+                Label("Drive", systemImage: "play.fill")
+            }
+            .tint(LocusTheme.statusGood)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                session.routeStore.delete(saved.id)
+            } label: {
+                Label("Delete", systemImage: "trash.fill")
+            }
+            // Profiles could be renamed and routes couldn't, so a commute saved
+            // as "Route" stayed "Route" — or had to be deleted and rebuilt to
+            // get a name that meant something.
+            Button {
+                renamingRouteID = saved.id
+                renameText = saved.name
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            .tint(.gray)
+
+            // A copy to experiment on, so a commute whose corrections you trust
+            // isn't the thing you edit to try something.
+            Button {
+                session.routeStore.duplicate(saved.id)
+            } label: {
+                Label("Duplicate", systemImage: "plus.square.on.square")
+            }
+            .tint(LocusTheme.accentSecondary)
+        }
+    }
+
+    private var visibleSavedRoutes: [SavedRoute] {
+        savedOrder.sort(session.routeStore.routes.matching(savedFilter))
     }
 
     private func savedSubtitle(_ saved: SavedRoute) -> String {

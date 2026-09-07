@@ -116,6 +116,7 @@ targets:
       - path: Tests
       - path: Locus/Support/CoordinateParser.swift
       - path: Locus/Support/DriveFormat.swift
+      - path: Locus/Support/RouteShape.swift
       - path: Locus/Support/SavedPlace.swift
       - path: Locus/Engine/TravelMode.swift
       - path: Locus/Engine/DriveTelemetry.swift

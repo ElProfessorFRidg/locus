@@ -128,3 +128,65 @@ final class RouteGeometryTests: XCTestCase {
         return out
     }
 }
+
+/// The thumbnail is the thing that makes a saved list scannable, and it is pure
+/// projection maths — exactly the code that goes subtly wrong and looks fine.
+final class RouteShapeTests: XCTestCase {
+    private let paris = CLLocationCoordinate2D(latitude: 48.85837, longitude: 2.29448)
+    private let size = CGSize(width: 44, height: 44)
+
+    private func codable(_ path: [CLLocationCoordinate2D]) -> [Coordinate2D] {
+        path.map(Coordinate2D.init)
+    }
+
+    func testEveryPointLandsInsideTheFrame() {
+        let path = (0..<200).map { step in
+            Geo.offset(paris, east: Double(step) * 7, north: sin(Double(step) / 9) * 300)
+        }
+        let points = RouteShape.normalised(codable(path), into: size, inset: 5)
+        XCTAssertFalse(points.isEmpty)
+        for point in points {
+            XCTAssertTrue((0...size.width).contains(point.x), "x \(point.x) escaped the frame")
+            XCTAssertTrue((0...size.height).contains(point.y), "y \(point.y) escaped the frame")
+        }
+    }
+
+    /// A squashed route is a different route to look at, so the aspect has to
+    /// survive: a path twice as wide as it is tall must still draw that way.
+    func testAspectRatioIsPreserved() {
+        let path = [
+            paris,
+            Geo.offset(paris, east: 2000, north: 0),
+            Geo.offset(paris, east: 2000, north: 1000),
+            Geo.offset(paris, east: 0, north: 1000),
+        ]
+        let points = RouteShape.normalised(codable(path), into: size, inset: 0)
+        let width = (points.map(\.x).max() ?? 0) - (points.map(\.x).min() ?? 0)
+        let height = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
+        XCTAssertEqual(width / height, 2, accuracy: 0.15)
+    }
+
+    /// Latitude grows north and screen y grows down, so the northernmost point
+    /// must come out at the top.
+    func testNorthIsUp() {
+        let path = [paris, Geo.offset(paris, east: 0, north: 1000)]
+        let points = RouteShape.normalised(codable(path), into: size, inset: 4)
+        XCTAssertGreaterThan(points[0].y, points[1].y, "the northern end should sit higher")
+    }
+
+    func testDegenerateInputsDoNotProducePoints() {
+        XCTAssertTrue(RouteShape.normalised([], into: size, inset: 4).isEmpty)
+        XCTAssertTrue(RouteShape.normalised(codable([paris]), into: size, inset: 4).isEmpty)
+    }
+
+    /// A route that doubles back on itself has zero span in one axis; that used
+    /// to be a divide by zero waiting to happen.
+    func testStraightLineDoesNotDivideByZero() {
+        let path = (0..<40).map { Geo.offset(paris, east: 0, north: Double($0) * 25) }
+        let points = RouteShape.normalised(codable(path), into: size, inset: 4)
+        XCTAssertEqual(points.count, path.count + 1)
+        for point in points {
+            XCTAssertTrue(point.x.isFinite && point.y.isFinite)
+        }
+    }
+}
