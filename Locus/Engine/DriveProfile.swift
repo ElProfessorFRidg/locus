@@ -504,8 +504,10 @@ struct ClosedRangeBox: Codable, Equatable {
     var upper: Double
 
     var range: ClosedRange<Double> {
-        let low = min(lower, upper)
-        return low...max(low, upper)
+        // Both bounds against both, not `max(low, upper)`: with the bounds the
+        // wrong way round that reduces to `upper`, so 90…10 collapsed to 10…10
+        // and every junction waited exactly the same time instead of varying.
+        min(lower, upper)...max(lower, upper)
     }
 
     func randomValue() -> Double {

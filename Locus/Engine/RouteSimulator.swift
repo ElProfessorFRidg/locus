@@ -422,7 +422,11 @@ enum RouteSimulator {
         let cross = abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x))
         guard cross > 0.5 else { return .infinity }
 
-        return Double(ab * bc * ca / cross)
+        // Circumradius is abc / 4K. `cross` is 2K, so the divisor is 2·cross —
+        // dividing by `cross` alone returned twice the real radius, which made
+        // every bend read as twice as open as it is. See the tests: a circle
+        // drawn at 200 m measured 400.
+        return Double(ab * bc * ca / (2 * cross))
     }
 
     /// Direction changes above `threshold` degrees per kilometre, within

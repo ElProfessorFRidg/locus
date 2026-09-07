@@ -11,7 +11,11 @@ final class DrivingTests: XCTestCase {
         XCTAssertEqual(DriveFormat.distance(0), "0 m")
         XCTAssertEqual(DriveFormat.distance(999), "999 m")
         XCTAssertEqual(DriveFormat.distance(1000), "1.0 km")
-        XCTAssertEqual(DriveFormat.distance(12_450), "12.5 km")
+        // Not 12_450: that is 12.45, which no binary double holds exactly — the
+        // stored value is a hair below, so `%.1f` gives 12.4. The formatter is
+        // right and the expectation was the thing that was wrong.
+        XCTAssertEqual(DriveFormat.distance(12_460), "12.5 km")
+        XCTAssertEqual(DriveFormat.distance(12_440), "12.4 km")
     }
 
     func testClockGrowsAnHoursFieldOnlyWhenNeeded() {
