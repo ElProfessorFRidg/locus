@@ -12,6 +12,10 @@ struct LimitStretchRow: View {
     let unit: SpeedUnit
     let override: LimitOverride?
     var onChange: (CLLocationSpeed?) -> Void
+    /// Show this stretch on the map. "1.2 km–2.4 km" says where along the route
+    /// it is and nothing about which road that is, which is the one thing you
+    /// need to know before deciding the estimate is wrong.
+    var onFocus: () -> Void
 
     private var displayed: Double {
         unit.fromMetresPerSecond(override?.limit ?? stretch.limit)
@@ -24,22 +28,30 @@ struct LimitStretchRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Rectangle()
-                .fill(LocusTheme.speedColor(forLimit: override?.limit ?? stretch.limit, unit: unit))
-                .frame(width: 4)
-                .clipShape(Capsule())
+            HStack(spacing: 12) {
+                Rectangle()
+                    .fill(LocusTheme.speedColor(forLimit: override?.limit ?? stretch.limit, unit: unit))
+                    .frame(width: 4)
+                    .clipShape(Capsule())
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(Int(displayed.rounded())) \(unit.short)")
-                    .font(.body.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(isCorrected ? LocusTheme.accent : .primary)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(Int(displayed.rounded())) \(unit.short)")
+                        .font(.body.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(isCorrected ? LocusTheme.accent : .primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
             }
-
-            Spacer(minLength: 8)
+            // Only this half taps: the +/− buttons live in the same row and a
+            // tappable row would swallow them.
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onFocus)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Shows this stretch on the map")
 
             HStack(spacing: 2) {
                 step(down: true)
@@ -62,8 +74,12 @@ struct LimitStretchRow: View {
     }
 
     private var subtitle: String {
+        // Its length as well as where it starts and ends: "1.2 km–2.4 km" makes
+        // you do the subtraction to learn the one number that says whether this
+        // stretch is worth correcting.
         var parts = [
             "\(DriveFormat.distance(stretch.startDistance))–\(DriveFormat.distance(stretch.endDistance))",
+            "\(DriveFormat.distance(stretch.length)) long",
         ]
         if isCorrected {
             parts.append("was \(Int(unit.fromMetresPerSecond(stretch.limit).rounded()))")

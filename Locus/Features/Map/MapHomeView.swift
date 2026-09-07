@@ -1081,6 +1081,11 @@ struct MapHomeView: View {
     private func focus(on coordinates: [CLLocationCoordinate2D]) {
         guard let region = Self.region(covering: coordinates) else { return }
         followsDrive = false
+        // Every caller of this is a row in the planner — pick an alternative,
+        // load a saved route, tap a stretch of limits — and every one of them
+        // means "show me this". At the large detent the sheet is over the map
+        // it just moved, so the answer arrives somewhere you can't see.
+        if showRouteSheet, routeDetent == .large { routeDetent = .medium }
         withAnimation(.easeInOut(duration: 0.4)) {
             position = .region(region)
         }

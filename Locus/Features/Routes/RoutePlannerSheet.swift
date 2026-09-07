@@ -564,7 +564,8 @@ struct RoutePlannerSheet: View {
                     stretch: stretch,
                     unit: session.drive.units,
                     override: workspace.override(for: stretch),
-                    onChange: { workspace.setOverride($0, for: stretch) }
+                    onChange: { workspace.setOverride($0, for: stretch) },
+                    onFocus: { onFocus(stretch.coordinates) }
                 )
             }
 
@@ -576,7 +577,7 @@ struct RoutePlannerSheet: View {
         } header: {
             Text("Speed limits along the way")
         } footer: {
-            Text("Estimated from the road's shape and the pace Apple expects — MapKit publishes no posted limits. Where it's wrong, set it here and the drive uses your number instead. Colours on the map match.")
+            Text("Estimated from the road's shape and the pace Apple expects — MapKit publishes no posted limits. Where it's wrong, set it here and the drive uses your number instead. Tap a stretch to see it on the map; the colours there match.")
         }
     }
 
