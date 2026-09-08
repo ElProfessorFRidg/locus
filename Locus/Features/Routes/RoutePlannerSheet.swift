@@ -189,8 +189,12 @@ struct RoutePlannerSheet: View {
         guard let route = workspace.selectedRoute,
               route.expectedTravelTime > 6 * 3600,
               !session.travelMode.usesRoadLimits else { return nil }
+        // Named rather than assumed: this fires on Run too, and "at walking
+        // pace" is the wrong sentence to read under a running route.
         return "\(DriveFormat.distance(route.distance)) on foot — Apple says "
-            + "\(DriveFormat.clock(route.expectedTravelTime)) at walking pace. Tap to switch to Drive and route it again."
+            + "\(DriveFormat.clock(route.expectedTravelTime)) at "
+            + "\(session.travelMode.gerund) pace. "
+            + "Tap to switch to Drive and route it again."
     }
 
     private func stopRow(index: Int, stop: RouteStop) -> some View {

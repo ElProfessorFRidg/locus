@@ -475,6 +475,14 @@ final class TravelModeAgreementTests: XCTestCase {
                        "the driver's ceiling is theirs to set, not the mode's")
     }
 
+    /// The whole reason this isn't `title + "ing"`.
+    func testEveryModeHasAGerundThatIsAWord() {
+        XCTAssertEqual(TravelMode.walk.gerund, "walking")
+        XCTAssertEqual(TravelMode.run.gerund, "running")
+        XCTAssertEqual(TravelMode.cycle.gerund, "cycling")
+        XCTAssertEqual(TravelMode.drive.gerund, "driving")
+    }
+
     func testDrivingStillEstimatesRoadLimits() {
         let driving = plan(mode: .drive, expected: 13.4)
         XCTAssertTrue(driving.usesEstimatedLimits)

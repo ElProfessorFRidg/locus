@@ -71,6 +71,17 @@ enum TravelMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// "walking", "running" — for prose that names the activity rather than
+    /// the mode. `title` plus "ing" gets you "runing".
+    var gerund: String {
+        switch self {
+        case .walk: return "walking"
+        case .run: return "running"
+        case .cycle: return "cycling"
+        case .drive: return "driving"
+        }
+    }
+
     /// Whether the car presets and the grip budget describe this mode.
     ///
     /// Only driving. A bicycle is not a hatchback with a smaller engine, and
