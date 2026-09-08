@@ -231,6 +231,7 @@ struct FunSpotsView: View {
                     Button {
                         session.stop(pairing: pairing)
                         UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        session.flash("Back to your real spot")
                     } label: {
                         Text("Stop")
                             .font(.fun(15, .heavy))
@@ -347,6 +348,66 @@ struct FunSpotsView: View {
                     .multilineTextAlignment(.center)
                     .padding(.top, 4)
             }
+
+            recents
+        }
+    }
+
+    /// Where you've been lately.
+    ///
+    /// The session has kept these all along and Fun mode never showed them, so
+    /// going back somewhere you visited an hour ago meant searching for it
+    /// again — or saving a spot you only ever wanted once.
+    @ViewBuilder
+    private var recents: some View {
+        if !session.recents.isEmpty {
+            VStack(spacing: 10) {
+                HStack {
+                    Text("Lately")
+                        .font(.fun(20, .semibold))
+                        .foregroundStyle(FunTheme.ink)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 6)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(session.recents.prefix(8)) { place in
+                            Button {
+                                beam(to: place)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(place.emoji ?? "🕘")
+                                        .font(.system(size: 18))
+                                    Text(place.name)
+                                        .font(.fun(14, .heavy))
+                                        .foregroundStyle(FunTheme.ink)
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 14)
+                                .frame(height: 48)
+                                .background(Capsule().fill(FunTheme.card))
+                                .overlay(Capsule().stroke(FunTheme.line, lineWidth: 1))
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button {
+                                    draft = FunSpotDraft(coordinate: place.coordinate, suggestedName: place.name)
+                                } label: {
+                                    Label("Keep it as a spot", systemImage: "star")
+                                }
+                                Button(role: .destructive) {
+                                    session.removeRecent(place)
+                                } label: {
+                                    Label("Forget it", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
         }
     }
 
@@ -356,6 +417,7 @@ struct FunSpotsView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         session.setPin(place.coordinate)
         session.teleport(to: place.coordinate, pairing: pairing)
+        session.flash("Off to \(place.name)\(place.emoji.map { " " + $0 } ?? "")…")
     }
 
     private func go(to coordinate: CLLocationCoordinate2D, named name: String?) {
@@ -366,6 +428,7 @@ struct FunSpotsView: View {
         session.setPin(coordinate)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         session.teleport(to: coordinate, pairing: pairing)
+        session.flash(name.map { "Off to \($0)…" } ?? "On your way…")
     }
 
     private func submit() {

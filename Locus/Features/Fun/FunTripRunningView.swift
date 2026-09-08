@@ -23,9 +23,10 @@ struct FunTripRunningView: View {
                 real: session.realCoordinate,
                 simulated: session.simulated,
                 emoji: emoji,
-                follows: true,
+                course: session.telemetry?.isStopped == false ? session.telemetry?.course : nil,
                 span: 900,
-                showsGap: false
+                showsGap: false,
+                follows: .constant(true)
             )
             .ignoresSafeArea()
 

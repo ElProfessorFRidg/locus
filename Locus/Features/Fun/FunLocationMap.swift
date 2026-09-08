@@ -15,25 +15,44 @@ struct FunLocationMap: View {
     /// Where Locus is telling everything else you are. Nil when not spoofing.
     var simulated: CLLocationCoordinate2D?
     var emoji: String = "📍"
-    /// Keeps the camera on the simulated position while it moves. Off, the
-    /// camera frames everything there is to see.
-    var follows: Bool = false
-    /// Metres across when following. Ignored otherwise.
-    var span: CLLocationDistance = 700
+    /// Which way you're going, if anything knows. Drawn as an arrow beside the
+    /// marker rather than by turning it: a rotated emoji reads as a mistake.
+    var course: CLLocationDirection? = nil
+    /// Where you have walked since setting off.
+    var trail: [CLLocationCoordinate2D] = []
     var route: [CLLocationCoordinate2D] = []
     var stops: [CLLocationCoordinate2D] = []
+    /// Metres across when the camera is following. Ignored otherwise.
+    var span: CLLocationDistance = 700
     /// Whether to write "1.2 km from your real spot" over the map.
     var showsGap: Bool = true
+    /// Whether the camera keeps up with the simulated position. Bound rather
+    /// than passed so the screen above can offer a Follow control; nil keeps
+    /// the camera framing everything there is to see.
+    var follows: Binding<Bool>? = nil
+    /// Whether the map answers to fingers. Off for the cards, which are
+    /// pictures of where you are, not places to work.
+    var interactive: Bool = false
+
+    @State private var position: MapCameraPosition = .automatic
 
     var body: some View {
-        Map(position: .constant(camera), interactionModes: []) {
+        Map(position: $position, interactionModes: interactive ? [.pan, .zoom] : []) {
             if route.count > 1 {
                 MapPolyline(coordinates: route)
                     .stroke(FunTheme.go, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
             }
 
-            // Drawn before the two positions so a stop never sits on top of the
-            // thing it is a stop for.
+            // Where you have been, under everything else — it is history, and
+            // history does not sit on top of the present.
+            if trail.count > 1 {
+                MapPolyline(coordinates: trail)
+                    .stroke(
+                        FunTheme.punch.opacity(0.55),
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round, dash: [1, 9])
+                    )
+            }
+
             ForEach(Array(stops.enumerated()), id: \.offset) { _, stop in
                 Annotation("", coordinate: stop) {
                     Circle()
@@ -51,16 +70,12 @@ struct FunLocationMap: View {
 
             if let simulated {
                 Annotation("", coordinate: simulated) {
-                    Text(emoji)
-                        .font(.system(size: 26))
-                        .frame(width: 52, height: 52)
-                        .background(Circle().fill(FunTheme.punch))
-                        .overlay(Circle().stroke(FunTheme.punch.opacity(0.30), lineWidth: 8))
+                    FakeHere(emoji: emoji, course: course)
                 }
             }
         }
         .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-        .allowsHitTesting(false)
+        .allowsHitTesting(interactive)
         .overlay(alignment: .topLeading) {
             if showsGap, let gap {
                 Text(gap)
@@ -70,7 +85,20 @@ struct FunLocationMap: View {
                     .padding(.vertical, 7)
                     .background(Capsule().fill(FunTheme.night.opacity(0.80)))
                     .padding(10)
+                    .allowsHitTesting(false)
             }
+        }
+        .onAppear { position = desiredCamera }
+        // The camera is re-aimed when the thing it is aimed at moves — and only
+        // then. Assigning it every redraw fought every pan the moment the map
+        // grew fingers.
+        .onChange(of: anchorKey) { _, _ in
+            guard follows?.wrappedValue ?? true else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { position = desiredCamera }
+        }
+        .onChange(of: follows?.wrappedValue ?? true) { _, following in
+            guard following else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { position = desiredCamera }
         }
         .accessibilityElement()
         .accessibilityLabel(accessibilitySummary)
@@ -94,8 +122,21 @@ struct FunLocationMap: View {
         return "Map: your fake spot, \(gap)"
     }
 
-    private var camera: MapCameraPosition {
-        if follows, let simulated {
+    /// Changes exactly when something the camera cares about has moved.
+    private var anchorKey: String {
+        let point = simulated ?? real
+        return [
+            String(format: "%.5f", point?.latitude ?? 0),
+            String(format: "%.5f", point?.longitude ?? 0),
+            "\(route.count)",
+            "\(stops.count)"
+        ].joined(separator: "|")
+    }
+
+    private var isFollowing: Bool { follows?.wrappedValue ?? false }
+
+    private var desiredCamera: MapCameraPosition {
+        if isFollowing, let simulated {
             return .region(MKCoordinateRegion(
                 center: simulated,
                 latitudinalMeters: span,
@@ -148,5 +189,34 @@ struct RealHere: View {
                 .frame(width: 14, height: 14)
                 .overlay(Circle().stroke(.white, lineWidth: 2.5))
         }
+    }
+}
+
+/// Where Locus says you are, and which way you're heading.
+struct FakeHere: View {
+    let emoji: String
+    var course: CLLocationDirection? = nil
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(FunTheme.punch.opacity(0.28))
+                .frame(width: 68, height: 68)
+
+            if let course {
+                Image(systemName: "location.north.fill")
+                    .font(.system(size: 13, weight: .black))
+                    .foregroundStyle(FunTheme.ink)
+                    .offset(y: -34)
+                    .rotationEffect(.degrees(course))
+                    .animation(.easeOut(duration: 0.25), value: course)
+            }
+
+            Text(emoji)
+                .font(.system(size: 26))
+                .frame(width: 52, height: 52)
+                .background(Circle().fill(FunTheme.punch))
+        }
+        .frame(width: 76, height: 76)
     }
 }

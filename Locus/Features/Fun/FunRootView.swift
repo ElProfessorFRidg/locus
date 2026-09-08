@@ -75,9 +75,37 @@ struct FunRootView: View {
                     .presentationDetents([.medium])
             }
 
-            FunTabBar(selection: $tab)
+            VStack(spacing: 10) {
+                if let toast = session.toast {
+                    Button {
+                        session.dismissToast()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(FunTheme.go)
+                            Text(toast)
+                                .font(.fun(14, .heavy))
+                                .foregroundStyle(FunTheme.ink)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Capsule().fill(FunTheme.cardLift))
+                        .overlay(Capsule().stroke(FunTheme.line, lineWidth: 1))
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+                }
+
+                FunTabBar(selection: $tab, busy: busyTabs)
+            }
         }
         .preferredColorScheme(.dark)
+        .animation(.snappy(duration: 0.25), value: session.toast)
         .animation(.snappy(duration: 0.22), value: tab)
         // Fun mode drives with its own parameters and never writes to the
         // profiles someone tuned in Pro mode. Cleared on the way out, so Pro is
@@ -120,12 +148,25 @@ struct FunRootView: View {
     private func syncProfile() {
         session.profileOverride = settings.profile(for: session.travelMode)
     }
+
+    /// Tabs with something happening on them.
+    ///
+    /// A joystick left on is a phone quietly lying about where it is, and the
+    /// only way to notice used to be to go and look at the tab it lives on.
+    private var busyTabs: Set<FunTab> {
+        var busy: Set<FunTab> = []
+        if session.joystickActive { busy.insert(.move) }
+        if session.telemetry != nil { busy.insert(.trip) }
+        if session.simulated != nil { busy.insert(.spots) }
+        return busy
+    }
 }
 
 /// Four tabs, drawn rather than borrowed: `TabView`'s bar is a system grey
 /// strip that would sit under this palette looking like part of another app.
 struct FunTabBar: View {
     @Binding var selection: FunTab
+    var busy: Set<FunTab> = []
 
     var body: some View {
         HStack(spacing: 0) {
@@ -136,6 +177,14 @@ struct FunTabBar: View {
                     VStack(spacing: 5) {
                         Image(systemName: tab.icon)
                             .font(.system(size: 20, weight: .semibold))
+                            .overlay(alignment: .topTrailing) {
+                                if busy.contains(tab) {
+                                    Circle()
+                                        .fill(FunTheme.go)
+                                        .frame(width: 7, height: 7)
+                                        .offset(x: 5, y: -3)
+                                }
+                            }
                         Text(tab.title)
                             .font(.fun(11, selection == tab ? .heavy : .bold))
                     }

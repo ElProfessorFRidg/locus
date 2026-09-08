@@ -169,6 +169,7 @@ struct FunSpotEditor: View {
             )
         }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        session.flash("\(draft.emoji) \(draft.name.isEmpty ? "Spot" : draft.name) saved")
         dismiss()
     }
 }
