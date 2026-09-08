@@ -33,7 +33,44 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Favorites & recents
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25
+- **Two interfaces** — the full one, and a Fun mode for someone who has never sideloaded anything
 - Fully on-device — no analytics, nothing uploaded
+
+## Two interfaces
+
+Locus' interface is for whoever sideloaded it: a map with everything floating on
+it, a route planner with lettered stops and per-stretch corrections, thirty-odd
+driving parameters, and a settings screen that reports the tunnel method, the
+interface it went over and what this copy was signed with. That is the right
+answer for the person who got the IPA onto the phone. It is not the answer for
+whoever they hand the phone to.
+
+So there is a second one. **Settings → Interface → Switch to Fun mode.**
+
+It is not the same screens with the hard parts hidden — it is a different app
+over the same engine:
+
+| | Locus | Fun mode |
+| --- | --- | --- |
+| Shape | One map, chrome floating on it | Four tabs, one question each |
+| Going somewhere | Drop a pin, then Teleport | Tap a spot, or search and you're there |
+| Saved places | A named list | A grid of emoji you recognise before you read |
+| Walking speed | Speed source → fixed speed → units → travel mode | One dial, 1–40 km/h, with 🐢 🚶 🏃 🚴 on it |
+| A journey | Stops, alternatives, limit corrections, saved routes | Two ends and 🐢 / 🚗 / ⚡ |
+| Playback | `timeScale`, 0.5×–8× | The same three chips, mid-trip |
+| The connection | Tunnel status, method, interface, entitlement, log | **Ready**, or **Tap to switch on** |
+| Palette | Glass over a dark map | Its own — indigo, pink, mint |
+
+Fun mode drives with its own parameters and **never writes to the profiles you
+tuned**: they are handed to the engine as an override while it is on screen and
+dropped when it isn't. Your places, your pairing and your tunnel are shared —
+star something in one and it is in the other, with the emoji kept.
+
+The way back is the first card of its **You** tab, and it asks before it
+switches. Pro stays the default: an existing install opens exactly where it
+always did.
+
+Everything Fun mode can't do, Locus still can. Nothing was removed to build it.
 
 ## Driving a route
 
@@ -196,6 +233,7 @@ CI runs it before the archive, so a failing assertion stops the build rather tha
 | **The driving model** | Fixed-speed plans, stopping at the end, resuming halfway, corrections beating the estimate — and every stored parameter clamped where the engine reads it. |
 | **Choosing a route** | Which route "office" finds, what sits at the top of the list, which alternative gets badged. |
 | **Reading a road number** | What separates an autoroute from a distance in metres is one lookahead in a regex, and getting it wrong would silently poison every limit on the route. Every prefix, every suffix, and both directions of the rule that claims an unnamed stretch. |
+| **Fun mode's dial** | It is the one speed in the app set by dragging rather than typed, and nothing downstream re-reads what it meant. Every band, both units, and that the profile it builds needs none of the engine's clamps. |
 
 Two bugs that had been shipping fell out of the suite's first run — every bend reading as twice as open as it is, and an inverted wait range collapsing instead of swapping — and several more were caught in new code before it ever shipped. Each is described in the commit that fixed it.
 

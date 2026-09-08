@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @State private var loopbackUp = TunnelController.loopbackReachable
     @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
+    @AppStorage(LocusInterfaceMode.defaultsKey) private var interface = LocusInterfaceMode.pro
 
     private var supportsOnDevicePairing: Bool {
         if #available(iOS 27.0, *) { return true }
@@ -36,6 +37,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                interfaceSection
                 pairingSection
                 tunnelSection
                 if showTunnelAdvanced { tunnelAdvancedSection }
@@ -102,6 +104,42 @@ struct SettingsView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { refresh() }
             }
+        }
+    }
+
+    // MARK: - Interface
+
+    /// The way into Fun mode, and back out of it again.
+    ///
+    /// Kept at the top rather than buried: someone handing this phone to a
+    /// teenager is looking for exactly this, and someone who landed in Fun mode
+    /// by accident needs to find its counterpart in one look.
+    private var interfaceSection: some View {
+        Section {
+            Button {
+                interface = .fun
+            } label: {
+                HStack(spacing: 12) {
+                    Text("🎈").font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Switch to Fun mode")
+                            .foregroundStyle(.primary)
+                        Text(LocusInterfaceMode.fun.summary)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Interface")
+        } footer: {
+            Text("A different app over the same engine: four tabs, saved spots with an emoji each, one speed dial, and nothing about tunnels or pairing. Your places, and this pairing, come with you. Switch back from its You tab.")
         }
     }
 

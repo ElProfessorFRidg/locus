@@ -97,6 +97,29 @@ final class SpoofSession: ObservableObject {
         }
     }
 
+    /// Parameters to drive with instead of `drive`, while something other than
+    /// the Pro sheet is in charge of them.
+    ///
+    /// Fun mode sets this to the profile behind its four chips and clears it on
+    /// the way out. Everything that reads driving parameters reads
+    /// `activeProfile`, so a Fun-mode drive never writes to — or is shaped by —
+    /// the named profiles someone tuned in Pro mode. Nil is the whole of the
+    /// old behaviour.
+    @Published var profileOverride: DriveProfile? {
+        didSet {
+            guard profileOverride != oldValue else { return }
+            refreshIdleTimer()
+        }
+    }
+
+    /// The parameters in force: whatever has taken charge, else the selected
+    /// profile.
+    var activeProfile: DriveProfile { profileOverride ?? drive }
+
+    /// How fast the joystick moves, when a dial rather than a profile is
+    /// setting it. Nil leaves `joystickTopSpeed` exactly as it was.
+    @Published var joystickSpeed: CLLocationSpeed?
+
     /// Named driving profiles. Switching between them beats retuning thirty
     /// parameters every time the kind of journey changes.
     let profiles: DriveProfileStore
@@ -194,7 +217,7 @@ final class SpoofSession: ObservableObject {
     /// the app is backgrounded, so it costs nothing to set more often than
     /// strictly needed and everything to set it less.
     private func refreshIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = drive.keepScreenAwake && (isRouting || joystickActive)
+        UIApplication.shared.isIdleTimerDisabled = activeProfile.keepScreenAwake && (isRouting || joystickActive)
     }
 
     /// Shows `message` briefly, replacing whatever was there. Cancelling the
@@ -389,9 +412,14 @@ final class SpoofSession: ObservableObject {
     /// Top speed the joystick moves at. A fixed speed set for routes is an
     /// explicit "go this fast" and applies here too; otherwise the travel mode
     /// decides, as before.
+    ///
+    /// `joystickSpeed` beats both. Fun mode's Move dial is a speed *for
+    /// walking around*, and tying it to the profile made it change when a trip
+    /// on the next tab switched the travel mode to driving.
     private var joystickTopSpeed: CLLocationSpeed {
-        drive.speedSource == .fixed
-            ? max(0.3, drive.fixedSpeedMetresPerSecond)
+        if let joystickSpeed { return max(0.3, joystickSpeed) }
+        return activeProfile.speedSource == .fixed
+            ? max(0.3, activeProfile.fixedSpeedMetresPerSecond)
             : travelMode.baseSpeed
     }
 
@@ -412,7 +440,7 @@ final class SpoofSession: ObservableObject {
         // Clamped exactly as the route walker clamps the same parameter. Left
         // open, a stored jitter above 1 makes the multiplier negative, and the
         // joystick drives you backwards at random.
-        let jitter = (1 + Double.random(in: -1...1) * drive.speedJitter).clamped(to: 0.5...1.5)
+        let jitter = (1 + Double.random(in: -1...1) * activeProfile.speedJitter).clamped(to: 0.5...1.5)
         let speed = joystickTopSpeed * min(1.0, magnitude) * jitter
         let dt = 0.25
         let meters = speed * dt
@@ -461,7 +489,7 @@ final class SpoofSession: ObservableObject {
         // started would only go stale and mislead.
         places.clear()
 
-        let profile = drive
+        let profile = activeProfile
         let mode = travelMode
         let basePlan = RouteSimulator.plan(
             coordinates: coordinates,
@@ -544,7 +572,7 @@ final class SpoofSession: ObservableObject {
                 simulatedSeconds: telemetry.elapsed,
                 wallClockSeconds: routeStartedAt.map { Date().timeIntervalSince($0) } ?? telemetry.elapsed,
                 laps: telemetry.lap,
-                profileName: drive.name,
+                profileName: activeProfile.name,
                 mode: travelMode
             )
             UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -568,9 +596,9 @@ final class SpoofSession: ObservableObject {
         isRoutePaused.toggle()
         // Pausing is one of the few changes worth an immediate Live Activity
         // push rather than waiting out the throttle.
-        if let telemetry, drive.showLiveActivity {
+        if let telemetry, activeProfile.showLiveActivity {
             LiveActivityController.shared.update(
-                Self.activityState(for: telemetry, profile: drive, paused: isRoutePaused)
+                Self.activityState(for: telemetry, profile: activeProfile, paused: isRoutePaused)
             )
         }
     }
@@ -658,7 +686,7 @@ final class SpoofSession: ObservableObject {
                 // watching a drive, and it used to do nothing until the route
                 // was restarted. Everything else is baked into the plan and
                 // can't change under a walker mid-route, so it stays snapshotted.
-                let scale = drive.timeScaleClamped
+                let scale = activeProfile.timeScaleClamped
 
                 await apply(fix.coordinate, pairing: pairing, markRecent: false)
                 telemetry = DriveTelemetry(
@@ -774,12 +802,13 @@ final class SpoofSession: ObservableObject {
     // MARK: - Places
 
     @discardableResult
-    func addFavorite(name: String, coordinate: CLLocationCoordinate2D) -> SavedPlace {
+    func addFavorite(name: String, coordinate: CLLocationCoordinate2D, emoji: String? = nil) -> SavedPlace {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let place = SavedPlace(
             name: trimmed.isEmpty ? Self.coordinateLabel(coordinate) : trimmed,
             latitude: coordinate.latitude,
-            longitude: coordinate.longitude
+            longitude: coordinate.longitude,
+            emoji: emoji
         )
 
         // Matching on coordinate rather than id: ids are unique now, so
@@ -788,6 +817,18 @@ final class SpoofSession: ObservableObject {
             // Don't let a generic star overwrite a named favourite for the same spot.
             if Self.isGenericFavoriteName(place.name), !Self.isGenericFavoriteName(existing.name) {
                 return existing
+            }
+            // Starring the same spot again from the Pro map carries no emoji;
+            // keeping the one it already had beats blanking it because the tap
+            // came from a screen that doesn't show them.
+            if place.emoji == nil, let kept = existing.emoji {
+                return replace(existing, with: SavedPlace(
+                    name: place.name,
+                    latitude: place.latitude,
+                    longitude: place.longitude,
+                    emoji: kept,
+                    id: existing.id
+                ))
             }
             favorites.removeAll { $0.isAt(coordinate) }
         }
@@ -820,6 +861,31 @@ final class SpoofSession: ObservableObject {
               let index = favorites.firstIndex(where: { $0.id == place.id }) else { return }
         favorites[index].name = trimmed
         SavedPlace.save(favorites, key: favoritesKey)
+    }
+
+    /// Renames a favourite and sets the emoji Fun mode shows it with, together.
+    ///
+    /// The spot sheet edits both at once, and an empty name means "leave it" —
+    /// clearing the field shouldn't be able to leave a place called nothing.
+    func updateFavorite(_ place: SavedPlace, name: String, emoji: String?) {
+        guard let index = favorites.firstIndex(where: { $0.id == place.id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { favorites[index].name = trimmed }
+        favorites[index].emoji = emoji
+        SavedPlace.save(favorites, key: favoritesKey)
+    }
+
+    /// Swaps a favourite for an edited copy, keeping its place in the list.
+    @discardableResult
+    private func replace(_ existing: SavedPlace, with place: SavedPlace) -> SavedPlace {
+        guard let index = favorites.firstIndex(where: { $0.id == existing.id }) else {
+            favorites.insert(place, at: 0)
+            SavedPlace.save(favorites, key: favoritesKey)
+            return place
+        }
+        favorites[index] = place
+        SavedPlace.save(favorites, key: favoritesKey)
+        return place
     }
 
     func removeFavorite(_ place: SavedPlace) {
