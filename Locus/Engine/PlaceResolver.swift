@@ -47,8 +47,11 @@ final class PlaceResolver: ObservableObject {
             return
         }
 
-        // Already know this one.
+        // Already know this one. The in-flight request was just cancelled, so
+        // the spinner has to be put away here too — a pin dragged away and back
+        // takes this path, and left it turning with nothing behind it.
         if let resolvedCoordinate, Geo.distance(coordinate, resolvedCoordinate) < staleDistance {
+            isResolving = false
             return
         }
 
