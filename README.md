@@ -56,7 +56,9 @@ over the same engine:
 | Going somewhere | Drop a pin, then Teleport | Tap a spot, or search and you're there |
 | Saved places | A named list | A grid of emoji you recognise before you read |
 | Walking speed | Speed source → fixed speed → units → travel mode | One dial, 1–40 km/h, with 🐢 🚶 🏃 🚴 on it |
-| A journey | Stops, alternatives, limit corrections, saved routes | Two ends and 🐢 / 🚗 / ⚡ |
+| A journey | Stops, alternatives, limit corrections, saved routes | Two ends you tap, stops in between, 🐢 / 🚗 / ⚡ |
+| Where you are | A pin, and a status bar reading coordinates | Both dots on one map, and how far apart they are |
+| Walking around | A joystick in the tray | The pad sits on the map, and dragging it sets you off |
 | Playback | `timeScale`, 0.5×–8× | The same three chips, mid-trip |
 | The connection | Tunnel status, method, interface, entitlement, log | **Ready**, or **Tap to switch on** |
 | Palette | Glass over a dark map | Its own — indigo, pink, mint |
