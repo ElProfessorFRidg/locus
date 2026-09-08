@@ -51,7 +51,13 @@ Routes are played through a small vehicle model rather than replayed point by po
 
 Keep several of these as named **profiles** — a commute and a walk in the park want opposite settings — and switch instead of retuning. Four ready-made ones are offered.
 
-**Speed limits are estimated, not looked up.** MapKit publishes no posted-limit data. Locus derives a limit from the pace Apple expects for the route combined with how the road bends and how often it turns, then snaps the result to values roads are actually signed at (30/50/90/130, or 25/35/55/70 in mph). Treat it as a good reading of the road, not a legal figure.
+**Speed limits are estimated, not looked up.** MapKit publishes no posted-limit data, so Locus reads the road two ways and snaps the answer to values roads are actually signed at — 20/30/50/70/80/90/110/130, or the mph equivalents.
+
+First, the road's **number**, where the route names one. Continental Europe encodes the class in the prefix — A is an autoroute, N a nationale, D a départementale — so the number says what kind of road this is, which no amount of looking at its shape can. Each class gets a band, and the road's shape picks within it: the same D road is 90 through open country and 50 through a village. Suffixed numbers count too (A6a and A6b are the two halves of the A6 into Paris), and a stretch of road that MapKit doesn't name — "Keep left" — is claimed for the road either side when that is the only thing it can be, so an unnamed step can't punch a hole through the middle of a motorway. The letters mean other things in Britain, so this is trusted only where the units say the numbering holds.
+
+Second, where no number is given, the road's **shape**: corner radius and how often it changes direction, scaled off the pace Apple expects for the route.
+
+Treat the result as a good reading of the road, not a legal figure.
 
 Because it's an estimate, the route is **coloured by limit on the map** before you drive it, and any stretch it gets wrong can be **corrected by hand** from the route sheet — the drive then uses your number. Routes are saveable, corrections and all, and a drive that gets interrupted can be picked up where it stopped.
 
@@ -178,7 +184,7 @@ xcodebuild test -project Locus.xcodeproj -scheme LocusTests \
   -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
-`LocusTests` is a logic bundle with **no host application**, on purpose. The app links `Vendor/idevice`, an arm64 device-only static library, so anything hosted by it can't build for a simulator at all — and a test bundle that only runs on a paired iPhone is a test bundle nobody runs. This one compiles the pure files directly: no UIKit, no SwiftUI, no FFI, nothing that needs a device to be true. That constraint is why `TravelMode`, `DriveFormat`, `RouteShape`, `SavedRouteOrder` and `RouteComparison` have files of their own.
+`LocusTests` is a logic bundle with **no host application**, on purpose. The app links `Vendor/idevice`, an arm64 device-only static library, so anything hosted by it can't build for a simulator at all — and a test bundle that only runs on a paired iPhone is a test bundle nobody runs. This one compiles the pure files directly: no UIKit, no SwiftUI, no FFI, nothing that needs a device to be true. That constraint is why `TravelMode`, `DriveFormat`, `RoadClass`, `RouteShape`, `SavedRouteOrder` and `RouteComparison` have files of their own.
 
 CI runs it before the archive, so a failing assertion stops the build rather than publishing an IPA nobody has reason to trust. What it covers, and why those parts:
 
@@ -189,6 +195,7 @@ CI runs it before the archive, so a failing assertion stops the build rather tha
 | **Geometry** | Pure maths with answers you can check by hand: a 3-4-5 offset measuring 500 m, a 200 m circle measuring 200 m, coordinates that aren't coordinates. |
 | **The driving model** | Fixed-speed plans, stopping at the end, resuming halfway, corrections beating the estimate — and every stored parameter clamped where the engine reads it. |
 | **Choosing a route** | Which route "office" finds, what sits at the top of the list, which alternative gets badged. |
+| **Reading a road number** | What separates an autoroute from a distance in metres is one lookahead in a regex, and getting it wrong would silently poison every limit on the route. Every prefix, every suffix, and both directions of the rule that claims an unnamed stretch. |
 
 Two bugs that had been shipping fell out of the suite's first run — every bend reading as twice as open as it is, and an inverted wait range collapsing instead of swapping — and several more were caught in new code before it ever shipped. Each is described in the commit that fixed it.
 
