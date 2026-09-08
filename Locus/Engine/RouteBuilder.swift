@@ -210,9 +210,10 @@ enum RouteBuilder {
     /// steps tile the route in order — so running the lengths up gives each
     /// named road a distance range without having to match polylines.
     ///
-    /// A step whose instruction names no road ("Turn left") is skipped rather
-    /// than guessed at: the estimator falls back to the road's shape there,
-    /// which is what it always did.
+    /// A step whose instruction names no road ("Turn left") is skipped here and
+    /// then offered back to `joinedRuns()`, which claims it for the road either
+    /// side when that is the only thing it can be. Anything still unclaimed
+    /// falls back to the road's shape, which is what it always did.
     static func roadSegments(of route: MKRoute) -> [RoadSegment] {
         var travelled: CLLocationDistance = 0
         var segments: [RoadSegment] = []
@@ -220,24 +221,13 @@ enum RouteBuilder {
         for step in route.steps {
             let end = travelled + step.distance
             if step.distance > 0, let roadClass = RoadClass.parse(step.instructions) {
-                // Merged with the previous run when it is the same class, so a
-                // motorway split across eight steps is one segment.
-                if let last = segments.last, last.roadClass == roadClass,
-                   abs(last.endDistance - travelled) < 1 {
-                    segments[segments.count - 1] = RoadSegment(
-                        startDistance: last.startDistance,
-                        endDistance: end,
-                        roadClass: roadClass
-                    )
-                } else {
-                    segments.append(RoadSegment(
-                        startDistance: travelled, endDistance: end, roadClass: roadClass
-                    ))
-                }
+                segments.append(RoadSegment(
+                    startDistance: travelled, endDistance: end, roadClass: roadClass
+                ))
             }
             travelled = end
         }
-        return segments
+        return segments.joinedRuns()
     }
 
     /// Routes through an ordered list of stops, one leg at a time.
@@ -302,7 +292,9 @@ enum RouteBuilder {
             coordinates: coordinates,
             distance: distance,
             expectedTravelTime: travelTime,
-            roads: roads
+            // Joined across the seam too: a stop dropped on the A1 splits one
+            // motorway into two legs, and each leg's steps only know their own.
+            roads: roads.joinedRuns()
         )]
     }
 

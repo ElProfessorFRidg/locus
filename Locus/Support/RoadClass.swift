@@ -80,17 +80,27 @@ enum RoadClass: String, CaseIterable, Codable, Sendable {
         return best
     }
 
-    /// `A1`, `RN 20`, `D 1017` — a class letter, an optional space, then up to
-    /// four digits. `M` is left out on purpose: it is a motorway in the UK and
-    /// a métropolitaine in France, and no prefix is worth reading two ways.
+    /// `A1`, `RN 20`, `D 1017`, `A6a`, `D 6A` — a class letter, an optional
+    /// space, up to four digits, and an optional suffix letter.
     ///
-    /// The trailing lookahead is what keeps a distance from reading as a road:
-    /// "N 500 M" would otherwise be road N500. French instructions write the
-    /// preposition as "à", which uppercases to "À" and so never matches the
+    /// The suffix is not decoration. France splits busy roads by letter — A6a
+    /// and A6b are the two halves of the A6 into Paris, and suffixed D roads
+    /// (D 6A, D 920A) are everywhere. Without it the digits ran into the letter,
+    /// there was no word boundary to close the match, and every one of those
+    /// roads parsed as nothing at all.
+    ///
+    /// `M` is excluded twice over. As a prefix it is a motorway in the UK and a
+    /// métropolitaine in France, and no prefix is worth reading two ways. As a
+    /// suffix it is the metre abbreviation, and no French road uses it — so
+    /// allowing it would let "N 500m" become road N500M.
+    ///
+    /// The trailing lookahead is what keeps a spaced distance from reading as a
+    /// road: "N 500 M" would otherwise be road N500. French instructions write
+    /// the preposition as "à", which uppercases to "À" and so never matches the
     /// ASCII `A` here, but the unit check costs nothing and covers the rest.
     private static let numberPattern: NSRegularExpression = {
         // Safe to force: a literal pattern, and `parse` is covered by tests.
-        try! NSRegularExpression(pattern: #"\b(RN|RD|[AND])\s?\d{1,4}\b(?!\s*(?:KM|MIN|M\b))"#)
+        try! NSRegularExpression(pattern: #"\b(RN|RD|[AND])\s?\d{1,4}[A-LN-Z]?\b(?!\s*(?:KM|MIN|M\b))"#)
     }()
 }
 
@@ -109,5 +119,50 @@ extension Array where Element == RoadSegment {
     /// The class covering `distance`, if any step named a road there.
     func roadClass(at distance: CLLocationDistance) -> RoadClass? {
         first { $0.contains(distance) }?.roadClass
+    }
+
+    /// Joins the runs and bridges the holes. Input must be in route order.
+    ///
+    /// Two things leave one road in pieces. Consecutive steps on the same road
+    /// are still separate steps — "Merge onto A1", then "Keep left to stay on
+    /// A1" — and some steps name no road at all ("Continue straight", "Keep
+    /// right") in the middle of one.
+    ///
+    /// The second kind is the reported bug seen from the other side: an unnamed
+    /// step punches a hole through the middle of an autoroute, and the shape
+    /// heuristic fills the hole with a town speed. The car drops to 50 for two
+    /// kilometres of the A1 and picks 130 back up afterwards.
+    ///
+    /// A hole is attributed to the road either side only when both name the
+    /// same class and the hole is shorter than each of them. A kilometre of
+    /// silence inside forty kilometres of A1 is the A1; forty kilometres of
+    /// silence between two brief mentions of a D road is not, and is left to
+    /// the shape heuristic as before. That is a scale-relative test, so it
+    /// needs no threshold to be wrong about.
+    func joinedRuns() -> [RoadSegment] {
+        var merged: [RoadSegment] = []
+        merged.reserveCapacity(count)
+
+        for segment in self {
+            guard let last = merged.last, last.roadClass == segment.roadClass else {
+                merged.append(segment)
+                continue
+            }
+            let gap = segment.startDistance - last.endDistance
+            // Sub-metre gaps are the steps simply touching, not a hole.
+            let touching = gap < 1
+            let shortEnough = gap < last.endDistance - last.startDistance
+                && gap < segment.endDistance - segment.startDistance
+            guard touching || shortEnough else {
+                merged.append(segment)
+                continue
+            }
+            merged[merged.count - 1] = RoadSegment(
+                startDistance: last.startDistance,
+                endDistance: max(last.endDistance, segment.endDistance),
+                roadClass: segment.roadClass
+            )
+        }
+        return merged
     }
 }
