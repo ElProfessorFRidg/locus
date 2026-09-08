@@ -467,7 +467,15 @@ struct BottomControlsView: View {
                 .transition(.scale(scale: 0.85, anchor: .bottomTrailing).combined(with: .opacity))
             }
 
-            travelModePicker
+            // Not while a route plays. The walker holds the plan it was built
+            // with, so changing the mode mid-drive does nothing to the drive you
+            // are watching — it only re-routes the next one. A row of controls
+            // that look live and aren't, taking fifty points from the HUD right
+            // when the HUD is the thing you are reading.
+            if !session.isRouting {
+                travelModePicker
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+            }
 
             HStack(spacing: 10) {
                 trayIcon("gearshape.fill", label: "Settings") { showSettings = true }
@@ -482,6 +490,7 @@ struct BottomControlsView: View {
         .contentShape(trayShape)
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: session.joystickActive)
         .animation(.snappy, value: session.travelMode)
+        .animation(.spring(response: 0.35, dampingFraction: 0.82), value: session.isRouting)
     }
 
     /// Segmented by hand rather than a `Picker`, so the selection can slide

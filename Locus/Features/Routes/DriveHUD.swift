@@ -150,6 +150,12 @@ struct DriveHUDView: View {
             .locusGlass(.interactive, in: Circle())
             .accessibilityLabel(isPaused ? "Resume route" : "Pause route")
 
+            // A red glyph, but not a red button. Ending the route is not
+            // destructive — you keep spoofing, at wherever the car got to — and
+            // it was drawn as a filled red disc a few hundred points above the
+            // filled red "Stop" in the tray, which leaves your real location.
+            // Two identical-looking red controls meaning different things.
+            // Filled red now belongs to that one alone.
             Button(action: onStop) {
                 Image(systemName: "stop.fill")
                     .font(.body.weight(.semibold))
@@ -158,8 +164,8 @@ struct DriveHUDView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(LocusTheme.danger)
-            .locusGlass(.interactive, tint: LocusTheme.danger.opacity(0.25), in: Circle())
-            .accessibilityLabel("Stop route")
+            .locusGlass(.interactive, in: Circle())
+            .accessibilityLabel("End the route")
         }
     }
 

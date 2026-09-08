@@ -216,7 +216,12 @@ struct MapHomeView: View {
 
     @MapContentBuilder
     private func pinAnnotation(proxy: MapProxy) -> some MapContent {
-        if let pin = session.pin {
+        // Not while something is moving the position on its own. A route
+        // rewrites `pin` on every fix, so the drop pin ends up on the same
+        // coordinate as the spoof marker — and, anchored above it, sits on top
+        // of the one annotation that is actually saying which way the car is
+        // pointing. Two markers, one position, and the useful one underneath.
+        if let pin = session.pin, !session.isRouting, !session.joystickActive {
             Annotation("", coordinate: pin, anchor: .bottom) {
                 MapDropPin(
                     selected: pinSelected,
