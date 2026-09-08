@@ -1,7 +1,14 @@
-import Darwin
 import Foundation
 import UIKit
 
+/// Hand-off to the standalone **LocalDevVPN** app.
+///
+/// Locus ships its own copy of the loopback tunnel now (see `TunnelController`),
+/// so this is the fallback for the one case the built-in tunnel can't cover:
+/// LiveContainer, which cannot load app extensions at all. Everything here is
+/// deliberately best-effort — `isInstalled` depends on LocalDevVPN declaring a
+/// URL scheme, which older App Store builds do not, so a `false` here means
+/// "couldn't confirm", not "definitely absent".
 enum LocalDevVPN {
     static let appStoreURL = URL(string: "https://apps.apple.com/us/app/localdevvpn/id6755608044")!
     static let detectURL = URL(string: "localdevvpn://")!
@@ -13,61 +20,31 @@ enum LocalDevVPN {
         UIApplication.shared.canOpenURL(detectURL)
     }
 
-    /// LocalDevVPN puts the tunnel network on a `10.7.0.x` (or custom) utun when connected.
+    /// The loopback subnet is up, whoever raised it.
     static var isConnected: Bool {
-        let addresses = ipv4InterfaceAddresses()
-        let target = TunnelConfig.targetIP
-        if addresses.contains(target) { return true }
-
-        let parts = target.split(separator: ".")
-        guard parts.count == 4 else { return false }
-        let prefix = parts.dropLast().joined(separator: ".") + "."
-        return addresses.contains { $0.hasPrefix(prefix) }
+        TunnelController.loopbackReachable
     }
 
     static func openInstalled() {
-        UIApplication.shared.open(enableURL)
+        // Older LocalDevVPN builds don't handle `enable`; opening the bare
+        // scheme at least gets the user to the connect button.
+        UIApplication.shared.open(enableURL, options: [:]) { opened in
+            if !opened {
+                UIApplication.shared.open(detectURL)
+            }
+        }
     }
 
     static func openAppStore() {
         UIApplication.shared.open(appStoreURL)
     }
 
-    /// Open LocalDevVPN to connect if installed; otherwise App Store.
+    /// Open LocalDevVPN to connect if installed; otherwise the App Store.
     static func openOrInstall() {
         if isInstalled {
             openInstalled()
         } else {
             openAppStore()
         }
-    }
-
-    private static func ipv4InterfaceAddresses() -> [String] {
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
-        defer { freeifaddrs(ifaddr) }
-
-        var results: [String] = []
-        var ptr: UnsafeMutablePointer<ifaddrs>? = first
-        while let current = ptr {
-            let interface = current.pointee
-            if interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) {
-                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                let nameLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-                if getnameinfo(
-                    interface.ifa_addr,
-                    nameLen,
-                    &host,
-                    socklen_t(host.count),
-                    nil,
-                    0,
-                    NI_NUMERICHOST
-                ) == 0 {
-                    results.append(String(cString: host))
-                }
-            }
-            ptr = interface.ifa_next
-        }
-        return results
     }
 }

@@ -16,6 +16,8 @@ settings:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "4"
 targets:
   Locus:
     type: application
@@ -24,17 +26,28 @@ targets:
       - path: Locus
         excludes:
           - "**/Info.plist"
+      # Types the app and the tunnel extension both need. Compiled into each
+      # target separately — they are different modules, so this is the standard
+      # way to share source between an app and its extension.
+      - path: LocusTunnel/Shared
+      # Same again for the widget extension: the Live Activity's shape.
+      - path: Shared
       - path: AppIcon.icon
       - path: Vendor/idevice/module.modulemap
         buildPhase: none
       - path: Vendor/idevice/idevice.h
         buildPhase: none
+    dependencies:
+      - target: LocusTunnel
+        embed: true
+        codeSign: true
+      - target: LocusWidgets
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus
         PRODUCT_NAME: Locus
-        MARKETING_VERSION: "1.0.2"
-        CURRENT_PROJECT_VERSION: "3"
         INFOPLIST_FILE: Locus/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Locus/Resources/Locus.entitlements
         CODE_SIGN_STYLE: Automatic
@@ -60,3 +73,84 @@ targets:
         ENABLE_BITCODE: NO
         SUPPORTS_MACCATALYST: NO
         SWIFT_OBJC_BRIDGING_HEADER: ""
+
+  # Locus' own loopback tunnel, so the app can bring the developer tunnel up
+  # itself instead of sending the user to LocalDevVPN first. Based on
+  # LocalDevVPN (StosVPN) — see LocusTunnel/PacketTunnelProvider.swift.
+  LocusTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: LocusTunnel
+        excludes:
+          - "**/Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus.tunnel
+        PRODUCT_NAME: LocusTunnel
+        INFOPLIST_FILE: LocusTunnel/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LocusTunnel/LocusTunnel.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: false
+        SKIP_INSTALL: YES
+        ENABLE_BITCODE: NO
+        SUPPORTS_MACCATALYST: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+
+  # Logic tests, with no host application on purpose.
+  #
+  # The app links `Vendor/idevice`, an arm64 device-only static library, so
+  # anything hosted by it cannot build for a simulator — and a test bundle you
+  # can only run on a paired iPhone is a test bundle nobody runs. Instead this
+  # target compiles the pure files directly: no UIKit, no SwiftUI, no FFI, and
+  # nothing that needs a device to be true.
+  #
+  # That constraint is why `TravelMode` and `DriveFormat` have their own files
+  # now. Both were pure types trapped inside `SpoofSession.swift` and a SwiftUI
+  # view, which dragged the whole engine in behind them.
+  LocusTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      - path: Locus/Support/CoordinateParser.swift
+      - path: Locus/Support/DriveFormat.swift
+      - path: Locus/Support/RoadClass.swift
+      - path: Locus/Support/RouteShape.swift
+      - path: Locus/Support/SavedPlace.swift
+      - path: Locus/Engine/TravelMode.swift
+      - path: Locus/Engine/DriveTelemetry.swift
+      - path: Locus/Engine/DriveProfile.swift
+      - path: Locus/Engine/RouteBuilder.swift
+      - path: Locus/Engine/RouteSimulator.swift
+      - path: Locus/Engine/RouteStorage.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus.tests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGNING_ALLOWED: NO
+        SUPPORTS_MACCATALYST: NO
+
+  # Live Activity for a route in progress. Unlike the tunnel, a widget extension
+  # needs no special entitlement, so this one survives a free-account re-sign.
+  LocusWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: LocusWidgets
+        excludes:
+          - "**/Info.plist"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus.widgets
+        PRODUCT_NAME: LocusWidgets
+        INFOPLIST_FILE: LocusWidgets/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: false
+        SKIP_INSTALL: YES
+        ENABLE_BITCODE: NO
+        SUPPORTS_MACCATALYST: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"

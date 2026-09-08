@@ -33,10 +33,45 @@ File pickers often break inside LiveContainer. Do one of the following:
 3. Generate an **RPPairing** file (not lockdown / SideStore `.mobiledevicepairing`).
 4. AirDrop / Share → Open in **Locus**, **Import**, or **Paste from clipboard**.
 
-## 3. LocalDevVPN
+## 3. The tunnel
 
-Install [LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044), connect it (default tunnel IP `10.7.0.1`).
+Locus needs a loopback tunnel so it can reach this iPhone's own developer service at `10.7.0.1`. It ships with one.
+
+### Built in (default)
+
+During setup, tap **Turn on the tunnel**. iOS asks once to allow the VPN configuration — approve it. Nothing leaves the device: the tunnel forwards no traffic anywhere, it only lets the phone talk to itself.
+
+If the first packet strategy can't pass traffic on your network, Locus tries the others and keeps whichever works. Settings → **Tunnel** shows which one is live, and **Tunnel log** shows what the extension itself reported.
+
+### If the app says to use LocalDevVPN
+
+Locus is sideloaded, so the built-in tunnel doesn't always survive installation. When it can't run, the app says which of these it is — in the status bar, in Settings → Tunnel, and during this step — with a button to install or open LocalDevVPN:
+
+| What you'll see | Why | What to do |
+| --- | --- | --- |
+| **This build has no built-in tunnel** | LiveContainer can't load app extensions, or a re-signer dropped them | Use LocalDevVPN |
+| **This build can't create a VPN** | Re-signed with a free Apple ID — Apple only grants Network Extension to paid accounts | Use LocalDevVPN, or re-sign with a paid account |
+| **iOS refused the VPN configuration** | You declined the prompt, or an old Locus VPN profile is stuck | Tap Connect again and allow it; or delete the old profile under Settings › General › VPN & Device Management |
+
+[LocalDevVPN](https://apps.apple.com/us/app/localdevvpn/id6755608044) raises exactly the same tunnel on `10.7.0.1`, so the two are interchangeable — teleport, joystick and routes all work the same.
+
+Tap the message for the full explanation, including what this copy was actually signed with. A **Tunnel log unavailable** notice is only a warning: the App Group was stripped, so the extension's own log can't be read, but the tunnel itself is fine.
 
 ## 4. Teleport
 
 On Wi‑Fi: drop a pin → **Teleport**. Then joystick / routes / GPX work; the session can continue on cellular.
+
+## 5. Driving a route
+
+Routes → **Find route on roads**, pick one of Apple's alternatives, then **Drive this route**.
+
+**Driving parameters** is where the route stops being a straight replay:
+
+- **Speed** — drive to the estimated road limit, a fixed speed, or the travel mode's pace.
+- **Tolerance** — the `+10%` dial. Presets for −10 / 0 / +5 / +10 / +20, and a live preview of what each sign becomes.
+- **Car** — preset vehicles, or set acceleration, braking and a cornering grip budget yourself. Corners are braked into, not snapped at.
+- **Traffic & stops** — density, junction stops and how long you're held at them.
+- **Realism** — speed wobble, GPS scatter, lane offset, drive-on-the-left.
+- **Playback** — 0.5×–8× time, fix rate, start delay, and loop / back-and-forth / return-once.
+
+Speed limits are **estimated**, not looked up: MapKit publishes no posted-limit data, so Locus reads the pace Apple expects for the route together with how the road bends, and snaps the result to values roads are actually signed at.

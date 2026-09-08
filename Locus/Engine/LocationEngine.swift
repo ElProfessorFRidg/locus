@@ -15,7 +15,7 @@ enum LocationEngineError: LocalizedError {
         switch self {
         case .invalidIP: return "Tunnel IP is invalid. Check Settings → Tunnel IP (usually 10.7.0.1)."
         case .pairingRead: return "Could not read the RPPairing file. Generate one with idevice_pair in RPPairing mode."
-        case .tunnelCreate: return "Could not open the developer tunnel. Is LocalDevVPN connected on Wi‑Fi?"
+        case .tunnelCreate: return "Could not open the developer tunnel. Check that the loopback tunnel is connected — Locus' own, or the LocalDevVPN app — and try the first teleport on Wi‑Fi."
         case .remoteServer: return "Connected to the tunnel but RemoteXPC handshake failed."
         case .simulationCreate: return "Could not open Apple’s location simulation service."
         case .locationSet: return "Failed to set simulated coordinates."
@@ -58,22 +58,35 @@ enum LocationEngine {
 
     static var isSessionActive: Bool { locationSimulation != nil }
 
-    static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) -> Result<Void, LocationEngineError> {
-        var result: Result<Void, LocationEngineError> = .failure(.locationSet)
-        queue.sync {
-            let code = setLocked(latitude: latitude, longitude: longitude, pairingPath: pairingPath, deviceIP: deviceIP)
-            result = code == ok ? .success(()) : .failure(.from(code: code))
+    /// Sends a coordinate to the device.
+    ///
+    /// Async, and that is the point. This is a network round trip over the
+    /// tunnel — and the *first* call is the whole handshake: pairing file,
+    /// tunnel, RemoteXPC, the simulation service. It used to run under
+    /// `queue.sync` from a `@MainActor` caller, so every fix blocked the main
+    /// thread for the length of that round trip, up to four times a second
+    /// while a route played, and the first teleport froze the UI for as long as
+    /// the handshake took. Hopping onto the queue and suspending instead leaves
+    /// the main thread free to draw the map it is being asked to move.
+    ///
+    /// The serial queue still serialises the FFI, so the C-side session state is
+    /// touched by exactly one caller at a time, exactly as before.
+    static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) async -> Result<Void, LocationEngineError> {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let code = setLocked(latitude: latitude, longitude: longitude, pairingPath: pairingPath, deviceIP: deviceIP)
+                continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
+            }
         }
-        return result
     }
 
-    static func clear() -> Result<Void, LocationEngineError> {
-        var result: Result<Void, LocationEngineError> = .failure(.notActive)
-        queue.sync {
-            let code = clearLocked()
-            result = code == ok ? .success(()) : .failure(.from(code: code))
+    static func clear() async -> Result<Void, LocationEngineError> {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let code = clearLocked()
+                continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
+            }
         }
-        return result
     }
 
     private static func cleanup() {
@@ -150,7 +163,17 @@ enum LocationEngine {
             cleanup()
             return simulationCreate
         }
-        // location_simulation_new consumes/owns remote server lifecycle alongside handle
+        // Dropped rather than freed. `location_simulation_new` is *not* documented
+        // as consuming its server — the header says so explicitly where it is
+        // true (`remote_server_new`: "It is consumed and may not be used again")
+        // and says nothing of the sort here — so this most likely leaks one
+        // `RemoteServerHandle`, and the connection behind it, per handshake. It
+        // is left alone deliberately: freeing a handle the Rust side did take
+        // ownership of is a double free rather than a leak, and that cannot be
+        // settled from the header alone. Check it against the idevice revision
+        // this library was built from before changing it; if it borrows, the fix
+        // is to keep the pointer and let `cleanup()` free it after the
+        // simulation, which is already the order it frees in.
         remoteServer = nil
 
         if let setError = location_simulation_set(locationSimulation, latitude, longitude) {

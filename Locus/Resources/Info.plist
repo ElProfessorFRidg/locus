@@ -50,11 +50,13 @@
 		<string>_remotepairing-pairable-host._tcp</string>
 		<string>_remoted._tcp</string>
 	</array>
+	<!-- `location` keeps the app alive through a drive (BackgroundKeepAlive);
+	     `audio` does the same through the on-device pairing handshake
+	     (SilentAudioKeepAlive). Both have a consumer in the source. -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
 		<string>location</string>
-		<string>processing</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
@@ -109,6 +111,10 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>localdevvpn</string>
