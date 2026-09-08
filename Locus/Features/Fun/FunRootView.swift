@@ -62,6 +62,18 @@ struct FunRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(.opacity)
+            // Attached here rather than beside the trouble sheet below: SwiftUI
+            // presents one sheet per view, and two on the same one means the
+            // second silently replaces the first.
+            .sheet(item: Binding(
+                get: { session.lastTrip },
+                set: { session.lastTrip = $0 }
+            )) { trip in
+                FunArrivedSheet(trip: trip)
+                    .environmentObject(session)
+                    .environmentObject(pairing)
+                    .presentationDetents([.medium])
+            }
 
             FunTabBar(selection: $tab)
         }
@@ -94,15 +106,6 @@ struct FunRootView: View {
         )) {
             FunTripRunningView(settings: settings)
                 .environmentObject(session)
-        }
-        .sheet(item: Binding(
-            get: { session.lastTrip },
-            set: { session.lastTrip = $0 }
-        )) { trip in
-            FunArrivedSheet(trip: trip)
-                .environmentObject(session)
-                .environmentObject(pairing)
-                .presentationDetents([.medium])
         }
         .alert("Hm", isPresented: Binding(
             get: { session.lastError != nil },
