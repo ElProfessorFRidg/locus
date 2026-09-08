@@ -159,7 +159,7 @@ extension Array where Element == RoadSegment {
             }
             merged[merged.count - 1] = RoadSegment(
                 startDistance: last.startDistance,
-                endDistance: max(last.endDistance, segment.endDistance),
+                endDistance: Swift.max(last.endDistance, segment.endDistance),
                 roadClass: segment.roadClass
             )
         }
