@@ -17,27 +17,17 @@ struct FunTripRunningView: View {
         ZStack {
             FunTheme.night.ignoresSafeArea()
 
-            if let coordinate = session.simulated {
-                Map(
-                    position: .constant(.region(MKCoordinateRegion(
-                        center: coordinate,
-                        latitudinalMeters: 900,
-                        longitudinalMeters: 900
-                    ))),
-                    interactionModes: []
-                ) {
-                    Annotation("", coordinate: coordinate) {
-                        Text(emoji)
-                            .font(.system(size: 26))
-                            .frame(width: 54, height: 54)
-                            .background(Circle().fill(.white))
-                            .overlay(Circle().stroke(.white.opacity(0.28), lineWidth: 10))
-                    }
-                }
-                .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            }
+            // The real position stays on screen while the fake one drives off
+            // across the city — which is the whole picture, and was missing.
+            FunLocationMap(
+                real: session.realCoordinate,
+                simulated: session.simulated,
+                emoji: emoji,
+                follows: true,
+                span: 900,
+                showsGap: false
+            )
+            .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 header

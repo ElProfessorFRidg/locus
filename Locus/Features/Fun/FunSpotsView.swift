@@ -195,9 +195,17 @@ struct FunSpotsView: View {
         let saved = coordinate.flatMap { spot(at: $0) }
 
         return VStack(spacing: 0) {
-            if let coordinate {
-                FunMiniMap(coordinate: coordinate, emoji: saved?.emoji ?? (faking == nil ? "🧍" : "📍"))
-                    .frame(height: 116)
+            if coordinate != nil {
+                // Both positions, always. The pin is deliberately not drawn as
+                // a fake one: until you teleport, the only place you are is
+                // where you really are, and a second marker saying otherwise
+                // is the one thing this map must not do.
+                FunLocationMap(
+                    real: session.realCoordinate,
+                    simulated: faking,
+                    emoji: saved?.emoji ?? "📍"
+                )
+                .frame(height: 132)
             }
 
             HStack(spacing: 12) {
@@ -427,34 +435,5 @@ struct FunSpotTile: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(active ? "\(place.name), you are here" : place.name)
-    }
-}
-
-/// A map you can't touch — it is a picture of where you are, not somewhere to
-/// work. Fun mode never asks anyone to aim.
-struct FunMiniMap: View {
-    let coordinate: CLLocationCoordinate2D
-    let emoji: String
-
-    var body: some View {
-        Map(
-            position: .constant(.region(MKCoordinateRegion(
-                center: coordinate,
-                latitudinalMeters: 700,
-                longitudinalMeters: 700
-            ))),
-            interactionModes: []
-        ) {
-            Annotation("", coordinate: coordinate) {
-                Text(emoji)
-                    .font(.system(size: 30))
-                    .frame(width: 54, height: 54)
-                    .background(Circle().fill(FunTheme.punch))
-                    .overlay(Circle().stroke(FunTheme.punch.opacity(0.35), lineWidth: 8))
-            }
-        }
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
