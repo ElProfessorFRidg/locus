@@ -39,7 +39,10 @@ struct DriveSettingsView: View {
             Form {
                 if let store { profileSection(store) }
                 speedSection
-                if profile.speedSource == .roadLimit { toleranceSection }
+                // Gated on the mode as well as the source: the engine ignores
+                // road limits on foot, so a "respect the limit, plus…" dial
+                // there is a dial onto nothing.
+                if profile.speedSource == .roadLimit, mode.usesRoadLimits { toleranceSection }
                 vehicleSection
                 trafficSection
                 realismSection
@@ -187,13 +190,26 @@ struct DriveSettingsView: View {
             Text("Speed")
         } footer: {
             if profile.speedSource == .roadLimit {
-                if mode.usesRoadLimits {
-                    Text("Locus estimates each road's limit from how fast Apple expects the route to take and how the road bends — MapKit publishes no posted limits, so this is a reading of the road, not a lookup.")
-                } else {
-                    Text("Road limits are estimated from driving-speed data. On \(mode.title.lowercased()) they'll read high — Fixed speed or Travel mode fits better.")
-                }
+                Text(roadLimitFooter)
             }
         }
+    }
+
+    /// What "road limit" actually does in the mode being edited — which is
+    /// three different things, and used to claim the wrong one on foot.
+    private var roadLimitFooter: String {
+        guard mode.usesRoadLimits else {
+            return "Roads aren't signed for pedestrians, so on \(mode.title.lowercased()) "
+                + "this setting is ignored and the travel mode's own pace is used. "
+                + "Pick Fixed speed to set one yourself."
+        }
+        let base = "Locus reads each road's class from its number where the route names one"
+            + " — A, N and D carry the classification in continental Europe — and its shape"
+            + " everywhere else. MapKit publishes no posted limits, so this is a reading of"
+            + " the road, not a lookup."
+        guard !mode.isMotorVehicle else { return base }
+        return base + " A bike doesn't do 130 because the sign says so, so on "
+            + "\(mode.title.lowercased()) the estimate is capped at a speed the mode can reach."
     }
 
     private var unitsBinding: Binding<SpeedUnit> {
@@ -293,33 +309,13 @@ struct DriveSettingsView: View {
 
     private var vehicleSection: some View {
         Section {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(VehiclePreset.allCases) { preset in
-                        Button {
-                            withAnimation(.snappy) { profile.apply(preset) }
-                        } label: {
-                            VStack(spacing: 6) {
-                                Image(systemName: preset.icon)
-                                    .font(.title3)
-                                Text(preset.title)
-                                    .font(.caption2.weight(.medium))
-                                    .lineLimit(1)
-                            }
-                            .frame(width: 74, height: 62)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(profile.vehicle == preset ? Color.black : .primary)
-                        .background(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(profile.vehicle == preset ? LocusTheme.accent : Color.primary.opacity(0.08))
-                        )
-                        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                }
-                .padding(.vertical, 2)
+            // Car presets write car physics — a bus tops out at 100 km/h and
+            // pulls 1.1 m/s² — so offering them to someone on foot is offering
+            // them a way to make walking wrong. Acceleration and braking stay:
+            // they still say how quickly you reach your pace and leave it.
+            if mode.isMotorVehicle {
+                vehiclePresets
             }
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
 
             sliderRow(
                 "Acceleration",
@@ -340,10 +336,48 @@ struct DriveSettingsView: View {
                 }
             }
         } header: {
-            Text("Car")
+            Text(mode.isMotorVehicle ? "Car" : "Movement")
         } footer: {
-            Text("Cornering is a lateral-grip budget: a bend of radius r is taken at √(budget × r), so tight turns slow the car down on their own. \(profile.cornering.title) is \(String(format: "%.1f", profile.cornering.lateralAcceleration)) m/s².")
+            Text(corneringFooter)
         }
+    }
+
+    private var vehiclePresets: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(VehiclePreset.allCases) { preset in
+                    Button {
+                        withAnimation(.snappy) { profile.apply(preset) }
+                    } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: preset.icon)
+                                .font(.title3)
+                            Text(preset.title)
+                                .font(.caption2.weight(.medium))
+                                .lineLimit(1)
+                        }
+                        .frame(width: 74, height: 62)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(profile.vehicle == preset ? Color.black : .primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(profile.vehicle == preset ? LocusTheme.accent : Color.primary.opacity(0.08))
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+    }
+
+    private var corneringFooter: String {
+        let budget = String(format: "%.1f", profile.cornering.lateralAcceleration)
+        let subject = mode.isMotorVehicle ? "the car" : "you"
+        return "Cornering is a lateral-grip budget: a bend of radius r is taken at "
+            + "√(budget × r), so tight turns slow \(subject) down on their own. "
+            + "\(profile.cornering.title) is \(budget) m/s²."
     }
 
     /// Editing a physics value by hand means you're no longer on a preset.
@@ -516,23 +550,40 @@ struct DriveSettingsView: View {
         Section {
             Toggle("Speedometer over the map", isOn: $profile.showHUD)
             Toggle("Lock Screen Live Activity", isOn: $profile.showLiveActivity)
-            Toggle("Warn when over the limit", isOn: $profile.warnWhenOverLimit)
-            Toggle("Haptic when speeding", isOn: $profile.hapticOnLimitChange)
-            Toggle("Keep the screen on while driving", isOn: $profile.keepScreenAwake)
-            Toggle("Trip fuel & CO₂", isOn: $profile.showTripEconomy)
-            if profile.showTripEconomy {
-                sliderRow(
-                    "Consumption",
-                    value: $profile.consumption,
-                    range: 0...30,
-                    format: "%.1f L/100km"
-                )
+            // Nothing to be over when nothing is signed.
+            if mode.usesRoadLimits {
+                Toggle("Warn when over the limit", isOn: $profile.warnWhenOverLimit)
+                Toggle("Haptic when speeding", isOn: $profile.hapticOnLimitChange)
+            }
+            Toggle(
+                mode.isMotorVehicle ? "Keep the screen on while driving" : "Keep the screen on",
+                isOn: $profile.keepScreenAwake
+            )
+            // A walk burns no diesel.
+            if mode.isMotorVehicle {
+                Toggle("Trip fuel & CO₂", isOn: $profile.showTripEconomy)
+                if profile.showTripEconomy {
+                    sliderRow(
+                        "Consumption",
+                        value: $profile.consumption,
+                        range: 0...30,
+                        format: "%.1f L/100km"
+                    )
+                }
             }
         } header: {
             Text("Extras")
         } footer: {
-            Text("The Live Activity keeps speed and progress on the Lock Screen while a route plays, so it doesn't need the app open. The fuel figure is your consumption times the distance — a garnish on the trip summary, not something the simulation measured.")
+            Text(extrasFooter)
         }
+    }
+
+    private var extrasFooter: String {
+        let base = "The Live Activity keeps speed and progress on the Lock Screen while a "
+            + "route plays, so it doesn't need the app open."
+        guard mode.isMotorVehicle else { return base }
+        return base + " The fuel figure is your consumption times the distance — a garnish "
+            + "on the trip summary, not something the simulation measured."
     }
 
     private var resetSection: some View {

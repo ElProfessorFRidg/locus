@@ -429,8 +429,14 @@ struct DriveProfile: Codable, Equatable, Identifiable {
         case .travelMode:
             parts.append(mode.title)
         case .roadLimit:
-            let sign = speedTolerance >= 0 ? "+" : "−"
-            parts.append("Limit \(sign)\(Int((abs(speedTolerance) * 100).rounded()))%")
+            // The engine ignores road limits on foot, so saying "Limit +10%"
+            // there described a setting that wasn't being applied.
+            if mode.usesRoadLimits {
+                let sign = speedTolerance >= 0 ? "+" : "−"
+                parts.append("Limit \(sign)\(Int((abs(speedTolerance) * 100).rounded()))%")
+            } else {
+                parts.append(mode.title)
+            }
         case .fixed:
             parts.append("\(Int(fixedSpeed.rounded())) \(units.short)")
         case .recorded:

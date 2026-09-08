@@ -113,7 +113,8 @@ struct RootView: View {
     }
 
     private func economy(for trip: TripSummary) -> (litres: Double, gramsCO2: Double)? {
-        guard session.drive.showTripEconomy else { return nil }
+        // A walk burns no diesel, whatever the toggle says.
+        guard trip.mode.isMotorVehicle, session.drive.showTripEconomy else { return nil }
         return session.tripEconomy(distance: trip.distance)
     }
 

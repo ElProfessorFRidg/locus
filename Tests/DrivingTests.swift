@@ -450,6 +450,31 @@ final class TravelModeAgreementTests: XCTestCase {
         XCTAssertFalse(walking.usesEstimatedLimits, "roads are not signed for pedestrians")
     }
 
+    /// The summary under "Driving parameters" is what most people ever read
+    /// about the profile, and on foot it claimed a limit tolerance the engine
+    /// was already ignoring.
+    func testTheSummaryDoesNotClaimALimitItIgnores() {
+        var profile = DriveProfile()
+        profile.speedSource = .roadLimit
+        profile.speedTolerance = 0.10
+
+        XCTAssertTrue(profile.summary(for: .drive).contains("Limit"))
+        XCTAssertTrue(profile.summary(for: .cycle).contains("Limit"))
+        XCTAssertFalse(profile.summary(for: .walk).contains("Limit"))
+        XCTAssertFalse(profile.summary(for: .run).contains("Limit"))
+        XCTAssertTrue(profile.summary(for: .walk).contains(TravelMode.walk.title))
+    }
+
+    /// Every mode's top speed has to be above the pace it is planned at, or the
+    /// cap would be quietly slowing down the mode it is meant to protect.
+    func testEveryModeCanReachItsOwnBaseSpeed() {
+        for mode in TravelMode.allCases {
+            XCTAssertGreaterThan(mode.topSpeed, mode.baseSpeed, "\(mode.title)")
+        }
+        XCTAssertEqual(TravelMode.drive.topSpeed, Double.infinity,
+                       "the driver's ceiling is theirs to set, not the mode's")
+    }
+
     func testDrivingStillEstimatesRoadLimits() {
         let driving = plan(mode: .drive, expected: 13.4)
         XCTAssertTrue(driving.usesEstimatedLimits)
@@ -549,6 +574,53 @@ final class RoadClassLimitTests: XCTestCase {
         let estimated = kph(plan(roads: []))
         XCTAssertLessThan(estimated, 130, "a 50 km/h average can't reach 130 on shape alone")
         XCTAssertGreaterThan(estimated, 0)
+    }
+
+    /// A cyclist follows the road, so `usesRoadLimits` includes them — but the
+    /// sign is the road's, not the rider's, and MapKit routes a bicycle as a
+    /// car. Nothing stopped a cycle route down the A1 being ridden at 130.
+    func testACyclistIsNotGivenMotorwaySpeed() {
+        var profile = DriveProfile()
+        profile.speedSource = .roadLimit
+        profile.units = .kph
+        profile.speedCeiling = 130
+        let roads = covering(.motorway)
+
+        func middle(_ mode: TravelMode) -> RoutePlan.Point {
+            let plan = RouteSimulator.plan(
+                coordinates: straightRoad,
+                profile: profile,
+                mode: mode,
+                routeExpectedSpeed: 13.9,
+                roads: roads
+            )
+            return plan.points[plan.points.count / 2]
+        }
+
+        let cycling = middle(.cycle)
+        // The road is still read truthfully: it is an autoroute, and the
+        // estimate says so. What changes is what the rider is asked to do on it.
+        XCTAssertEqual(SpeedUnit.kph.fromMetresPerSecond(cycling.limit), 130, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(cycling.ceiling, TravelMode.cycle.topSpeed + 0.001)
+
+        // And driving is left exactly as it was.
+        XCTAssertGreaterThan(middle(.drive).ceiling, TravelMode.cycle.topSpeed)
+    }
+
+    /// The cap is on the *limit*, not on a speed someone typed. Asking for a
+    /// fixed 60 km/h on a bicycle is a deliberate choice and Locus honours it.
+    func testAFixedSpeedIsNotCappedByTheMode() {
+        var profile = DriveProfile()
+        profile.speedSource = .fixed
+        profile.units = .kph
+        profile.fixedSpeed = 60
+        profile.speedCeiling = 130
+
+        let plan = RouteSimulator.plan(
+            coordinates: straightRoad, profile: profile, mode: .cycle, routeExpectedSpeed: nil
+        )
+        let middle = plan.points[plan.points.count / 2]
+        XCTAssertEqual(SpeedUnit.kph.fromMetresPerSecond(middle.ceiling), 60, accuracy: 0.5)
     }
 
     /// `A` means autoroute in France and a trunk road in Britain. The

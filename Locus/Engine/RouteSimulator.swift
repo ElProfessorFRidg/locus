@@ -309,6 +309,12 @@ enum RouteSimulator {
         let lateral = profile.cornering.lateralAcceleration
         let ceilingCap = profile.ceilingMetresPerSecond
         let tolerance = usesLimits ? (1 + profile.speedToleranceClamped) : 1
+        // A cyclist follows the road, so they get road limits — but the sign is
+        // not their speed, and MapKit routes a bicycle as a car, so a cycle
+        // route could be sent down the A1 and simulated at 130. Only the
+        // limit-derived target is capped: a fixed speed is a deliberate choice
+        // and stays exactly what was asked for.
+        let modeCap: CLLocationSpeed = usesLimits ? mode.topSpeed : .greatestFiniteMagnitude
 
         // Stops are chosen in their own pass. Rolling the dice per sampled point
         // would fire several times across one junction — the turn spans half a
@@ -325,7 +331,7 @@ enum RouteSimulator {
         points.reserveCapacity(resampled.count)
 
         for index in resampled.indices {
-            let target = min(limits[index] * tolerance, ceilingCap)
+            let target = min(limits[index] * tolerance, ceilingCap, modeCap)
 
             // Corner speed from the lateral-acceleration budget: v = √(a·r).
             let radius = cornerRadius(

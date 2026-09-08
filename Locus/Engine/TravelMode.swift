@@ -50,4 +50,31 @@ enum TravelMode: String, CaseIterable, Identifiable, Sendable {
     /// Only driving gets the full parameter set; the rest borrow the physics but
     /// the UI leads with different defaults.
     var usesRoadLimits: Bool { self == .drive || self == .cycle }
+
+    /// The fastest this mode plausibly moves, m/s — a ceiling on what a *road
+    /// limit* is allowed to ask for, not on what the rider may be told to do.
+    ///
+    /// A cyclist follows the road, so `usesRoadLimits` includes them, but the
+    /// road's sign is not a cyclist's speed: a D road outside a village is
+    /// posted at 80 and the bike on it is doing 25. Worse, MapKit routes a
+    /// bicycle as a car, so nothing stopped a cycle route being sent down the
+    /// A1 and simulated at 130.
+    ///
+    /// Driving is uncapped here on purpose: the driver's ceiling is the
+    /// profile's "never exceed", which is theirs to set.
+    var topSpeed: CLLocationSpeed {
+        switch self {
+        case .walk: return 2.2      // 8 km/h, a walk you'd call brisk
+        case .run: return 5.6       // 20 km/h
+        case .cycle: return 11.1    // 40 km/h, downhill on a road bike
+        case .drive: return .infinity
+        }
+    }
+
+    /// Whether the car presets and the grip budget describe this mode.
+    ///
+    /// Only driving. A bicycle is not a hatchback with a smaller engine, and
+    /// offering someone on foot a choice between a van and a bus is offering
+    /// them nothing.
+    var isMotorVehicle: Bool { self == .drive }
 }

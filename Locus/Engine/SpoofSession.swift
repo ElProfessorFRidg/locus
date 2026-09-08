@@ -53,6 +53,11 @@ struct TripSummary: Identifiable, Equatable {
     var wallClockSeconds: TimeInterval
     var laps: Int
     var profileName: String
+    /// How it was covered. Kept on the trip rather than read off the session,
+    /// so the summary of a drive still reads as a drive after the mode is
+    /// switched with the card still up — and so a walk never reports litres of
+    /// petrol burnt.
+    var mode: TravelMode = .drive
 
     var averageSpeed: CLLocationSpeed {
         simulatedSeconds > 1 ? distance / simulatedSeconds : 0
@@ -539,7 +544,8 @@ final class SpoofSession: ObservableObject {
                 simulatedSeconds: telemetry.elapsed,
                 wallClockSeconds: routeStartedAt.map { Date().timeIntervalSince($0) } ?? telemetry.elapsed,
                 laps: telemetry.lap,
-                profileName: drive.name
+                profileName: drive.name,
+                mode: travelMode
             )
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
