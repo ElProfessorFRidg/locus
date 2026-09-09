@@ -40,14 +40,8 @@ struct FunSpotEditor: View {
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 7)
 
-    /// Places teenagers actually save, then the ones anyone does.
-    private static let palette = [
-        "🏠", "🏫", "🏢", "🏟️", "🏖️", "⛰️", "🗼",
-        "🎮", "🎧", "🛹", "⚽", "🏀", "🎸", "🎬",
-        "🍔", "🍕", "🧋", "☕", "🍦", "🛒", "💈",
-        "🌴", "❄️", "🌊", "🔥", "🌈", "🌙", "⭐",
-        "🚀", "👽", "🐉", "💜", "😎", "👋", "📍"
-    ]
+    /// Shared with Pro's Places list, so both interfaces offer the same set.
+    private static let palette = SavedPlace.emojiPalette
 
     var body: some View {
         ZStack {

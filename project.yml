@@ -124,6 +124,7 @@ targets:
       - path: Locus/Support/InterfaceMode.swift
       - path: Locus/Engine/DriveTelemetry.swift
       - path: Locus/Engine/DriveProfile.swift
+      - path: Locus/Engine/DriveProfileChanges.swift
       - path: Locus/Engine/RouteBuilder.swift
       - path: Locus/Engine/RouteSimulator.swift
       - path: Locus/Engine/RouteStorage.swift

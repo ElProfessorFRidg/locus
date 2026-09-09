@@ -22,6 +22,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - A trip summary when you arrive: distance, time, average, fuel — and one tap to drive it again or drive it back
 - **Driving parameters** — respect the limit +10%, acceleration and braking, corner grip, traffic, junction stops, GPS scatter, lane offset, 0.5×–8× playback, loop / back-and-forth
 - Named driving profiles, saved routes, and resume after an interrupted drive
+- **What you've changed** — every parameter that differs from standard, listed at the top of the sheet, each one a tap to put back
 - Route coloured by estimated limit before you drive it, with per-stretch corrections
 - Live speedometer with a speed-limit sign, plus a Lock Screen / Dynamic Island Live Activity
 - Playback speed changes mid-drive from the HUD, and the screen stays on while you watch
@@ -45,7 +46,7 @@ interface it went over and what this copy was signed with. That is the right
 answer for the person who got the IPA onto the phone. It is not the answer for
 whoever they hand the phone to.
 
-So there is a second one. **Settings → Interface → Switch to Fun mode.**
+The walkthrough asks which one you want on its last screen, so whoever is setting the phone up for someone else picks once, at the moment they are already thinking about it. Afterwards: **Settings → Interface → Switch to Fun mode.**
 
 It is not the same screens with the hard parts hidden — it is a different app
 over the same engine:
@@ -236,6 +237,7 @@ CI runs it before the archive, so a failing assertion stops the build rather tha
 | **Choosing a route** | Which route "office" finds, what sits at the top of the list, which alternative gets badged. |
 | **Reading a road number** | What separates an autoroute from a distance in metres is one lookahead in a regex, and getting it wrong would silently poison every limit on the route. Every prefix, every suffix, and both directions of the rule that claims an unnamed stretch. |
 | **Fun mode's dial** | It is the one speed in the app set by dragging rather than typed, and nothing downstream re-reads what it meant. Every band, both units, and that the profile it builds needs none of the engine's clamps. |
+| **What you've changed** | The summary of a profile is only worth reading if it is complete, and a parameter added to `DriveProfile` and forgotten in the table would silently never appear. Reflection checks the two lists still match, so that mistake fails the build instead of shipping. |
 
 Two bugs that had been shipping fell out of the suite's first run — every bend reading as twice as open as it is, and an inverted wait range collapsing instead of swapping — and several more were caught in new code before it ever shipped. Each is described in the commit that fixed it.
 

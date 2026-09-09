@@ -609,8 +609,7 @@ struct PlacesView: View {
     @EnvironmentObject private var pairing: PairingStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var placeToRename: SavedPlace?
-    @State private var renameText = ""
+    @State private var editing: SavedPlace?
 
     var body: some View {
         NavigationStack {
@@ -629,10 +628,9 @@ struct PlacesView: View {
                                     Label("Delete", systemImage: "trash.fill")
                                 }
                                 Button {
-                                    placeToRename = place
-                                    renameText = place.name
+                                    editing = place
                                 } label: {
-                                    Label("Rename", systemImage: "pencil")
+                                    Label("Edit", systemImage: "pencil")
                                 }
                                 .tint(.gray)
                             }
@@ -671,22 +669,9 @@ struct PlacesView: View {
                     }
                 }
             }
-            .alert("Rename Favorite", isPresented: Binding(
-                get: { placeToRename != nil },
-                set: { if !$0 { placeToRename = nil } }
-            )) {
-                TextField("Name", text: $renameText)
-                Button("Cancel", role: .cancel) {
-                    placeToRename = nil
-                }
-                Button("Save") {
-                    if let place = placeToRename {
-                        session.renameFavorite(place, to: renameText)
-                    }
-                    placeToRename = nil
-                }
-            } message: {
-                Text("Choose a name you’ll recognize later.")
+            .sheet(item: $editing) { place in
+                PlaceEditorSheet(place: place)
+                    .environmentObject(session)
             }
         }
     }
@@ -696,15 +681,109 @@ struct PlacesView: View {
             session.teleport(to: place.coordinate, pairing: pairing)
             dismiss()
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(place.name).foregroundStyle(.primary)
-                Text(CoordinateParser.text(place.coordinate))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                // Shown here too, not just in Fun mode: the two interfaces
+                // share one list of places, and a place that looks different
+                // in each reads as two different places.
+                if let emoji = place.emoji {
+                    Text(emoji).font(.title3)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(place.name).foregroundStyle(.primary)
+                    Text(CoordinateParser.text(place.coordinate))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .contextMenu {
             LocationActionsMenu(coordinate: place.coordinate, name: place.name)
         }
+    }
+}
+
+/// Rename a favourite, and pick the emoji both interfaces show it with.
+///
+/// Fun mode has always asked for one; Pro could only rename, so a place starred
+/// from the map arrived in the other interface as a grey pin that could only be
+/// fixed from the other interface.
+struct PlaceEditorSheet: View {
+    let place: SavedPlace
+
+    @EnvironmentObject private var session: SpoofSession
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String
+    @State private var emoji: String?
+
+    init(place: SavedPlace) {
+        self.place = place
+        _name = State(initialValue: place.name)
+        _emoji = State(initialValue: place.emoji)
+    }
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 7)
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("Name", text: $name)
+                        .textInputAutocapitalization(.words)
+                }
+
+                Section {
+                    LazyVGrid(columns: columns, spacing: 8) {
+                        emojiButton(nil, label: "—")
+                        ForEach(SavedPlace.emojiPalette, id: \.self) { candidate in
+                            emojiButton(candidate, label: candidate)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("Emoji")
+                } footer: {
+                    Text("Shown wherever this place appears. It is what makes Fun mode's grid readable without reading it.")
+                }
+
+                Section {
+                    LabeledContent("Coordinates", value: CoordinateParser.text(place.coordinate))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Edit place")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        session.updateFavorite(place, name: name, emoji: emoji)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func emojiButton(_ candidate: String?, label: String) -> some View {
+        Button {
+            emoji = candidate
+        } label: {
+            Text(label)
+                .font(.title3)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(emoji == candidate ? LocusTheme.accent.opacity(0.30) : Color.primary.opacity(0.06))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(candidate ?? "No emoji")
+        .accessibilityAddTraits(emoji == candidate ? [.isSelected] : [])
     }
 }

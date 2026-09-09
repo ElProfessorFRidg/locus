@@ -232,3 +232,21 @@ extension PersistenceTests {
         XCTAssertEqual(back.first?.id, place.id)
     }
 }
+
+// MARK: - The shared emoji palette
+
+extension PersistenceTests {
+    /// Both interfaces offer this list. Duplicates would render as two
+    /// identical, separately-selectable buttons.
+    func testEmojiPaletteHasNoDuplicates() {
+        let palette = SavedPlace.emojiPalette
+        XCTAssertFalse(palette.isEmpty)
+        XCTAssertEqual(Set(palette).count, palette.count)
+    }
+
+    func testEmojiPaletteFillsWholeRowsOfSeven() {
+        // Both grids are seven wide; a partial last row is a ragged edge in two
+        // places at once.
+        XCTAssertEqual(SavedPlace.emojiPalette.count % 7, 0)
+    }
+}

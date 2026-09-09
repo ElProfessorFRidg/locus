@@ -50,6 +50,19 @@ struct SavedPlace: Identifiable, Codable, Equatable {
             && abs(longitude - coordinate.longitude) < 0.00015
     }
 
+    /// The emoji offered when a place is named, in both interfaces.
+    ///
+    /// One list rather than two: a spot picked in Fun mode and one edited in
+    /// Pro's Places list are the same place, and offering different pictures
+    /// for it in each would make them look like different features.
+    static let emojiPalette = [
+        "🏠", "🏫", "🏢", "🏟️", "🏖️", "⛰️", "🗼",
+        "🎮", "🎧", "🛹", "⚽", "🏀", "🎸", "🎬",
+        "🍔", "🍕", "🧋", "☕", "🍦", "🛒", "💈",
+        "🌴", "❄️", "🌊", "🔥", "🌈", "🌙", "⭐",
+        "🚀", "👽", "🐉", "💜", "😎", "👋", "📍"
+    ]
+
     static func load(key: String) -> [SavedPlace] {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([SavedPlace].self, from: data) else {
