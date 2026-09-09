@@ -211,3 +211,42 @@ final class PersistenceTests: XCTestCase {
         XCTAssertFalse(override.contains(201))
     }
 }
+
+// MARK: - Fun mode's emoji
+
+/// Adding a field to a stored type is the exact shape of bug this file exists
+/// for: `emoji` arrived after people already had favourites.
+extension PersistenceTests {
+    func testFavouritesSavedBeforeEmojiExistedStillDecode() throws {
+        let json = #"[{"name":"Home","latitude":48.85837,"longitude":2.29448}]"#
+        let places = try JSONDecoder().decode([SavedPlace].self, from: Data(json.utf8))
+        XCTAssertEqual(places.count, 1)
+        XCTAssertNil(places[0].emoji, "no emoji is not the same as a broken favourite")
+    }
+
+    func testEmojiSurvivesARoundTrip() throws {
+        let place = SavedPlace(name: "Rio", latitude: -22.97, longitude: -43.18, emoji: "🏖️")
+        let data = try JSONEncoder().encode([place])
+        let back = try JSONDecoder().decode([SavedPlace].self, from: data)
+        XCTAssertEqual(back.first?.emoji, "🏖️")
+        XCTAssertEqual(back.first?.id, place.id)
+    }
+}
+
+// MARK: - The shared emoji palette
+
+extension PersistenceTests {
+    /// Both interfaces offer this list. Duplicates would render as two
+    /// identical, separately-selectable buttons.
+    func testEmojiPaletteHasNoDuplicates() {
+        let palette = SavedPlace.emojiPalette
+        XCTAssertFalse(palette.isEmpty)
+        XCTAssertEqual(Set(palette).count, palette.count)
+    }
+
+    func testEmojiPaletteFillsWholeRowsOfSeven() {
+        // Both grids are seven wide; a partial last row is a ragged edge in two
+        // places at once.
+        XCTAssertEqual(SavedPlace.emojiPalette.count % 7, 0)
+    }
+}
