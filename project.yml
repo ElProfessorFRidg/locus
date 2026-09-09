@@ -16,8 +16,8 @@ settings:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-    MARKETING_VERSION: "1.1.0"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "1.2.0"
+    CURRENT_PROJECT_VERSION: "5"
 targets:
   Locus:
     type: application
