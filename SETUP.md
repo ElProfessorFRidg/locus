@@ -57,6 +57,10 @@ Locus is sideloaded, so the built-in tunnel doesn't always survive installation.
 
 Tap the message for the full explanation, including what this copy was actually signed with. A **Tunnel log unavailable** notice is only a warning: the App Group was stripped, so the extension's own log can't be read, but the tunnel itself is fine.
 
+### No pairing or no tunnel at all
+
+Settings → **Proxy app module** writes a Shadowrocket / Surge / Loon / Stash module that rewrites Apple's Wi‑Fi location answers to the pin (via [ios-location-spoofer](https://github.com/mekos2772/ios-location-spoofer)). In the proxy app: turn on HTTPS decryption, install and fully trust its certificate, import the module, reconnect, then toggle Location Services off/on. It's a fallback — outdoors, real GPS can pull the phone back, and routes / joystick still need the tunnel.
+
 ## 4. Teleport
 
 On Wi‑Fi: drop a pin → **Teleport**. Then joystick / routes / GPX work; the session can continue on cellular.

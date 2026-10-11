@@ -115,6 +115,7 @@ targets:
     sources:
       - path: Tests
       - path: Locus/Support/CoordinateParser.swift
+      - path: Locus/Support/ProxyModule.swift
       - path: Locus/Support/DriveFormat.swift
       - path: Locus/Support/RoadClass.swift
       - path: Locus/Support/RouteShape.swift
