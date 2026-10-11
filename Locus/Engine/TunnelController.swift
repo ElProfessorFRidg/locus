@@ -286,27 +286,65 @@ final class TunnelController: ObservableObject {
 
     /// Sends a provider message to the running extension and decodes its reply.
     func exchange(_ envelope: InterceptEnvelope) async -> TunnelReply? {
-        guard let session = manager?.connection as? NETunnelProviderSession,
-              session.status == .connected,
-              let message = try? JSONEncoder().encode(envelope) else { return nil }
+        guard let session = manager?.connection as? NETunnelProviderSession else {
+            lastExchangeFailure = "Locus’ tunnel isn’t set up."
+            return nil
+        }
+        guard session.status == .connected else {
+            lastExchangeFailure = "The tunnel isn’t connected (\(Self.describe(session.status)))."
+            return nil
+        }
+        guard let message = try? JSONEncoder().encode(envelope) else {
+            lastExchangeFailure = "Couldn’t encode the message."
+            return nil
+        }
 
         // The reply handler may never fire if the extension dies mid-message, so
-        // the first of reply and timeout wins.
-        return await withCheckedContinuation { continuation in
+        // the first of reply and timeout wins. Turning network mode on does real
+        // work in the extension (resolving the hosts, starting the listener,
+        // reapplying the network settings), so the wait is generous.
+        let seconds = 45
+        let outcome: (TunnelReply?, String?) = await withCheckedContinuation { continuation in
             let once = NetworkSpoofer.Flag()
             do {
                 try session.sendProviderMessage(message) { reply in
                     guard once.claim() else { return }
-                    continuation.resume(returning: reply.flatMap { try? JSONDecoder().decode(TunnelReply.self, from: $0) })
+                    guard let reply else {
+                        continuation.resume(returning: (nil, "The extension sent no reply."))
+                        return
+                    }
+                    if let decoded = try? JSONDecoder().decode(TunnelReply.self, from: reply) {
+                        continuation.resume(returning: (decoded, nil))
+                    } else {
+                        continuation.resume(returning: (nil, "The extension’s reply couldn’t be read."))
+                    }
                 }
             } catch {
-                if once.claim() { continuation.resume(returning: nil) }
+                if once.claim() { continuation.resume(returning: (nil, "Couldn’t reach the extension: \(error.localizedDescription)")) }
                 return
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
-                if once.claim() { continuation.resume(returning: nil) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(seconds)) {
+                if once.claim() { continuation.resume(returning: (nil, "The extension didn’t reply within \(seconds) seconds.")) }
             }
         }
+        lastExchangeFailure = outcome.1
+        return outcome.0
+    }
+
+    /// Why the last `exchange` returned nothing, for the message the person sees.
+    private(set) var lastExchangeFailure: String?
+
+    private static func describe(_ status: NEVPNStatus) -> String {
+        switch status {
+        case .invalid: return "invalid"
+        case .disconnected: return "disconnected"
+        case .connecting: return "still connecting"
+        case .connected: return "connected"
+        case .reasserting: return "reasserting"
+        case .disconnecting: return "disconnecting"
+        @unknown default: return "unknown"
+        }
+    }
     }
 
     // MARK: - Manager plumbing

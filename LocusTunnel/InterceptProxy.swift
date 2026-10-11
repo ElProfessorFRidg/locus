@@ -397,7 +397,13 @@ private final class UpstreamResolver: @unchecked Sendable {
     }
 
     private func systemLookup(_ host: String) async -> UInt32? {
-        await withCheckedContinuation { continuation in
+        await withCheckedContinuation { (outer: CheckedContinuation<UInt32?, Never>) in
+            // A host the system resolver can't find (the mainland-China names, off
+            // a Chinese network) can take a long time to fail; the whole command
+            // that is waiting on this must not.
+            let gate = OnceGate()
+            let continuation = BoundedResume(gate: gate, continuation: outer)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { continuation.resume(returning: nil) }
             DispatchQueue.global(qos: .utility).async {
                 var hints = addrinfo()
                 hints.ai_family = AF_INET
@@ -414,6 +420,14 @@ private final class UpstreamResolver: @unchecked Sendable {
                 // Our own tunnel's address means the question was already hijacked.
                 continuation.resume(returning: value & 0xFFFF_FF00 == 0x0A07_0000 ? nil : value)
             }
+        }
+    }
+
+    private struct BoundedResume {
+        let gate: OnceGate
+        let continuation: CheckedContinuation<UInt32?, Never>
+        func resume(returning value: UInt32?) {
+            if gate.claim() { continuation.resume(returning: value) }
         }
     }
 
@@ -484,7 +498,7 @@ enum InterceptIdentityLoader {
 
 // MARK: - NWConnection as async
 
-private final class OnceGate: @unchecked Sendable {
+final class OnceGate: @unchecked Sendable {
     private let lock = NSLock()
     private var claimed = false
 

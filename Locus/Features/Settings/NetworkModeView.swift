@@ -177,6 +177,7 @@ struct NetworkModeView: View {
         Section {
             Text("• Only Wi-Fi and cell-tower positioning is changed. With a clear sky, GPS may still say where you really are; indoors it usually follows.")
             Text("• iOS asks again only now and then. After teleporting, turn Location Services off and on (or toggle Airplane Mode) to make it ask straight away.")
+            Text("• On iOS 26 and later, locationd keeps the last real position in memory and may keep using it even though the reply was rewritten. If “Replies rewritten” goes up but the map doesn’t move, restart the iPhone (Airplane Mode and Location Services don’t clear that cache), then turn Wi-Fi on with the tunnel connected before opening Maps.")
             Text("• It teleports; it doesn’t move. Routes and the joystick work best with the Developer method.")
         } header: {
             Text("Good to know")

@@ -51,8 +51,28 @@ jobs:
 
       # coreutils is here for `gtimeout`: macOS ships no GNU `timeout`, and a
       # test step that can hang needs one.
+      #
+      # Homebrew's auto-update and cleanup are what make a three-package install
+      # slow on a fresh runner, and neither changes what gets installed.
       - name: Install build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
         run: brew install xcodegen xcbeautify coreutils
+
+      # Incremental builds: DerivedData keyed on the project definition, with the
+      # last run's cache as the fallback so a push that touches a few files
+      # recompiles those files instead of everything. `restore-keys` is the point;
+      # an exact-match-only key would miss on every commit.
+      - name: Cache DerivedData
+        uses: actions/cache@v4
+        with:
+          path: build/DerivedData
+          key: derived-${{ runner.os }}-${{ hashFiles('project.yml') }}-${{ github.sha }}
+          restore-keys: |
+            derived-${{ runner.os }}-${{ hashFiles('project.yml') }}-
+            derived-${{ runner.os }}-
 
       # project.yml is the source of truth; the committed Locus.xcodeproj is a
       # generated artifact that goes stale whenever a target or file moves.
@@ -113,6 +133,9 @@ jobs:
             -scheme LocusTests \
             -destination "id=$UDID" \
             -destination-timeout 120 \
+            -derivedDataPath build/DerivedData \
+            -parallel-testing-enabled NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             | xcbeautify
 
@@ -130,6 +153,8 @@ jobs:
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -archivePath build/Locus.xcarchive \
+            -derivedDataPath build/DerivedData \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \

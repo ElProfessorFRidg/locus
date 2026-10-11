@@ -116,7 +116,7 @@ final class NetworkSpoofer: ObservableObject {
             guard let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) else {
                 sentIdentity = nil
                 Self.active.value = false
-                return .failure(.network("The tunnel didn’t answer."))
+                return .failure(.network("The tunnel didn’t answer. \(TunnelController.shared.lastExchangeFailure ?? "")"))
             }
             status = reply.intercept
             if Self.isInForce(reply) {

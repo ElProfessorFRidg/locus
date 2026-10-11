@@ -290,8 +290,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Applies the current settings; `true` if iOS accepted them.
     private func applySettings() async -> Bool {
         let settings = makeSettings()
+        // Bounded: commands run one after another, so one that never comes back
+        // would hold up every later one.
         let error: Error? = await withCheckedContinuation { continuation in
-            setTunnelNetworkSettings(settings) { continuation.resume(returning: $0) }
+            let gate = OnceGate()
+            setTunnelNetworkSettings(settings) { error in
+                if gate.claim() { continuation.resume(returning: error) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 12) {
+                if gate.claim() {
+                    continuation.resume(returning: NSError(domain: "LocusTunnel", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "iOS didn't answer the network settings in 12 seconds",
+                    ]))
+                }
+            }
         }
         if let error {
             log("Reapplying tunnel settings failed: \(error)", isError: true)
