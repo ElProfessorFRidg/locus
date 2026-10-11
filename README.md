@@ -31,6 +31,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Background keep-alive + live status bar + drop alerts
 - Paste a coordinate or a Maps link into search; long-press the status bar to copy, link or share where you are
 - Precision placement — pan under a crosshair, then nudge the pin 1 / 5 / 25 m at a time
+- **Pro mode** — a live "what apps see" readout: the fix Core Location really delivers, whether iOS flags it as simulated, accuracy, and how far it is from what Locus asked for
 - Favorites & recents
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25

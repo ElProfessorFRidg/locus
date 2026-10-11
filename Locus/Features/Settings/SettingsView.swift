@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var showImporter = false
     @State private var showPairOnDevice = false
     @State private var showNetworkMode = false
+    @State private var showReadout = false
+    @AppStorage(ProMode.defaultsKey) private var proMode = false
     @State private var backend = SpoofBackend.current
     @StateObject private var intercept = InterceptIdentity.shared
     @State private var showNameEasterEgg = false
@@ -43,6 +45,7 @@ struct SettingsView: View {
                 pairingSection
                 tunnelSection
                 if showTunnelAdvanced { tunnelAdvancedSection }
+                proSection
                 drivingSection
                 appearanceSection
                 privacySection
@@ -74,6 +77,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showNetworkMode) {
                 NetworkModeView()
+            }
+            .sheet(isPresented: $showReadout) {
+                ProReadoutView()
             }
             .sheet(isPresented: $showPairOnDevice) {
                 PairOnDeviceView()
@@ -109,6 +115,24 @@ struct SettingsView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { refresh() }
             }
+        }
+    }
+
+    // MARK: - Pro
+
+    private var proSection: some View {
+        Section {
+            Toggle("Pro mode", isOn: $proMode)
+
+            Button {
+                showReadout = true
+            } label: {
+                Label("What apps see", systemImage: "scope")
+            }
+        } header: {
+            Text("Pro")
+        } footer: {
+            Text("Reads the fix back from Core Location the way any other app would — including whether iOS marks it as simulated — and, with Pro mode on, keeps a one-line readout on the map.")
         }
     }
 

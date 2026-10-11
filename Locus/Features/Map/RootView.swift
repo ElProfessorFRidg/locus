@@ -8,6 +8,8 @@ struct RootView: View {
 
     @State private var showSettings = false
     @State private var showPlaces = false
+    @State private var showReadout = false
+    @AppStorage(ProMode.defaultsKey) private var proMode = false
 
     /// Owned here rather than by the map, because the bottom chrome acts on it
     /// too — the trip summary offers to drive the route again, or back.
@@ -54,6 +56,11 @@ struct RootView: View {
                             .onTapGesture { session.dismissToast() }
                     }
 
+                    if proMode {
+                        ProChip { showReadout = true }
+                            .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    }
+
                     BottomControlsView(
                         showSettings: $showSettings,
                         showPlaces: $showPlaces
@@ -66,6 +73,7 @@ struct RootView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: session.telemetry == nil)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.routeCountdown)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: session.toast)
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: proMode)
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: session.lastTrip)
         }
         .sheet(isPresented: $showSettings) {
@@ -73,6 +81,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $showPlaces) {
             PlacesView()
+        }
+        .sheet(isPresented: $showReadout) {
+            ProReadoutView()
         }
         .task {
             // One quiet attempt on launch: if the loopback subnet is already up
