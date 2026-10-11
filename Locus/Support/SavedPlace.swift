@@ -12,12 +12,19 @@ struct SavedPlace: Identifiable, Codable, Equatable {
     var name: String
     var latitude: Double
     var longitude: Double
+    /// How Fun mode shows this place: one emoji, chosen when it was saved.
+    ///
+    /// Optional because the Pro map stars places without asking for one, and
+    /// because every favourite saved before this existed has none. Fun mode
+    /// falls back to a pin rather than making anyone pick.
+    var emoji: String?
 
-    init(name: String, latitude: Double, longitude: Double, id: UUID = UUID()) {
+    init(name: String, latitude: Double, longitude: Double, emoji: String? = nil, id: UUID = UUID()) {
         self.id = id
         self.name = name
         self.latitude = latitude
         self.longitude = longitude
+        self.emoji = emoji
     }
 
     /// Entries saved before ids existed have no `id` key. Decoding field by
@@ -29,6 +36,7 @@ struct SavedPlace: Identifiable, Codable, Equatable {
         name = (try? container.decode(String.self, forKey: .name)) ?? ""
         latitude = try container.decode(Double.self, forKey: .latitude)
         longitude = try container.decode(Double.self, forKey: .longitude)
+        emoji = try? container.decode(String.self, forKey: .emoji)
     }
 
     var coordinate: CLLocationCoordinate2D {
@@ -41,6 +49,19 @@ struct SavedPlace: Identifiable, Codable, Equatable {
         abs(latitude - coordinate.latitude) < 0.00015
             && abs(longitude - coordinate.longitude) < 0.00015
     }
+
+    /// The emoji offered when a place is named, in both interfaces.
+    ///
+    /// One list rather than two: a spot picked in Fun mode and one edited in
+    /// Pro's Places list are the same place, and offering different pictures
+    /// for it in each would make them look like different features.
+    static let emojiPalette = [
+        "🏠", "🏫", "🏢", "🏟️", "🏖️", "⛰️", "🗼",
+        "🎮", "🎧", "🛹", "⚽", "🏀", "🎸", "🎬",
+        "🍔", "🍕", "🧋", "☕", "🍦", "🛒", "💈",
+        "🌴", "❄️", "🌊", "🔥", "🌈", "🌙", "⭐",
+        "🚀", "👽", "🐉", "💜", "😎", "👋", "📍"
+    ]
 
     static func load(key: String) -> [SavedPlace] {
         guard let data = UserDefaults.standard.data(forKey: key),

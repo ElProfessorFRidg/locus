@@ -38,6 +38,7 @@ struct DriveSettingsView: View {
         NavigationStack {
             Form {
                 if let store { profileSection(store) }
+                changedSection
                 speedSection
                 // Gated on the mode as well as the source: the engine ignores
                 // road limits on foot, so a "respect the limit, plus…" dial
@@ -144,6 +145,56 @@ struct DriveSettingsView: View {
             Text("Profile")
         } footer: {
             Text("A commute and a walk in the park want opposite settings. Keep one of each and switch, instead of retuning thirty sliders.")
+        }
+    }
+
+    // MARK: - What's been changed
+
+    /// Every parameter that differs from an untouched profile, and a tap to put
+    /// each one back.
+    ///
+    /// Thirty-odd parameters over nine sections, kept in named profiles that
+    /// outlive any memory of what was done to them. "Why does this one drive
+    /// like that" used to mean reading the whole sheet twice — once here and
+    /// once against a fresh profile — and the answer was usually one slider
+    /// somebody nudged a month ago.
+    @ViewBuilder
+    private var changedSection: some View {
+        let changes = profile.changes()
+        if !changes.isEmpty {
+            Section {
+                ForEach(changes) { change in
+                    Button {
+                        withAnimation(.snappy) { profile.revert(change.id) }
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(change.label)
+                                    .foregroundStyle(.primary)
+                                Text("was \(change.standard)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Text(change.value)
+                                .font(.body.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(LocusTheme.accent)
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(change.label): \(change.value), was \(change.standard)")
+                    .accessibilityHint("Puts it back")
+                }
+            } header: {
+                Text(changes.count == 1 ? "1 change from standard" : "\(changes.count) changes from standard")
+            } footer: {
+                Text("Everything not listed here is at its default. Tap a row to put that one back.")
+            }
         }
     }
 

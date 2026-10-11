@@ -19,6 +19,10 @@ struct SetupFlowView: View {
     @State private var tunnelUp = TunnelController.loopbackReachable
     @State private var isConnectingTunnel = false
     @State private var troubleBlocker: TunnelBlocker?
+    /// Which interface the last screen is offering. Written to storage only
+    /// when the walkthrough is finished, so backing out of it changes nothing.
+    @State private var chosenInterface = LocusInterfaceMode.pro
+    @AppStorage(LocusInterfaceMode.defaultsKey) private var interface = LocusInterfaceMode.pro
     @StateObject private var tunnel = TunnelController.shared
     @Environment(\.scenePhase) private var scenePhase
 
@@ -26,6 +30,7 @@ struct SetupFlowView: View {
         case welcome
         case pairing
         case vpn
+        case interface
     }
 
     init(initialStep: Step = .welcome, onFinished: @escaping () -> Void) {
@@ -55,6 +60,8 @@ struct SetupFlowView: View {
                         pairingPage
                     case .vpn:
                         vpnPage
+                    case .interface:
+                        interfacePage
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -117,6 +124,102 @@ struct SetupFlowView: View {
         } message: {
             Text(session.lastError ?? "")
         }
+    }
+
+    // MARK: - Which interface
+
+    /// The last screen of the walkthrough, and the only place the choice is
+    /// offered without going looking for it.
+    ///
+    /// Fun mode lived in Settings, five taps past a pairing section and a
+    /// tunnel section — which is to say it was findable by exactly the person
+    /// who doesn't need it. Whoever is setting this phone up for someone else
+    /// is already here, already thinking about who will use it, and has just
+    /// done the only two hard steps. So it is asked here.
+    private var interfacePage: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 20)
+
+            VStack(spacing: 22) {
+                Text("🎈")
+                    .font(.system(size: 52))
+
+                VStack(spacing: 10) {
+                    Text("Who's using it?")
+                        .font(.title.weight(.bold))
+                        .multilineTextAlignment(.center)
+
+                    Text("Both do the same things to your location. They ask you for very different amounts.")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(spacing: 12) {
+                    ForEach(LocusInterfaceMode.allCases) { mode in
+                        interfaceCard(mode)
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+
+            Spacer()
+
+            VStack(spacing: 12) {
+                primaryButton("Start") {
+                    interface = chosenInterface
+                    onFinished()
+                }
+
+                Text("You can switch at any time — it's the first thing in Settings, and the first card of Fun mode's You tab.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 28)
+        }
+    }
+
+    private func interfaceCard(_ mode: LocusInterfaceMode) -> some View {
+        let selected = chosenInterface == mode
+        return Button {
+            withAnimation(.snappy) { chosenInterface = mode }
+        } label: {
+            HStack(alignment: .top, spacing: 14) {
+                Text(mode.emoji)
+                    .font(.system(size: 30))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(mode.title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(mode.summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(selected ? LocusTheme.accent : Color.secondary.opacity(0.5))
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(selected ? LocusTheme.accent : Color.clear, lineWidth: 1.5)
+        )
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     // MARK: - Chrome
@@ -445,13 +548,13 @@ struct SetupFlowView: View {
                 }
 
                 if tunnelUp {
-                    primaryButton("Start teleporting") { onFinished() }
+                    primaryButton("Nearly there") { go(to: .interface) }
                 } else if activeBlocker == nil {
                     // Skipping leaves the app unable to do the one thing it is
                     // for. Styling that identically to "Start teleporting" —
                     // same accent capsule, same weight — invited the tap that
                     // ends the walkthrough in a state where nothing works.
-                    Button("Skip for now") { onFinished() }
+                    Button("Skip for now") { go(to: .interface) }
                         .locusSecondaryButton()
 
                     Text("Teleporting won't work until the tunnel is on. You can turn it on later in Settings.")
@@ -461,7 +564,7 @@ struct SetupFlowView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Button("I’ve connected it — continue") {
-                        onFinished()
+                        go(to: .interface)
                     }
                     .locusSecondaryButton()
                 }

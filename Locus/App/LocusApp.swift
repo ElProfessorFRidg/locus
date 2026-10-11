@@ -9,6 +9,9 @@ struct LocusApp: App {
     @StateObject private var pairing = PairingStore.shared
     @AppStorage(SetupGate.defaultsKey) private var setupComplete = false
     @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
+    /// Which of the two interfaces opens. Pro by default, so an existing
+    /// install lands exactly where it always did.
+    @AppStorage(LocusInterfaceMode.defaultsKey) private var interface = LocusInterfaceMode.pro
     @Environment(\.scenePhase) private var scenePhase
 
     /// Map when setup finished, or when already paired outside this walkthrough.
@@ -20,7 +23,10 @@ struct LocusApp: App {
         WindowGroup {
             Group {
                 if showMap {
-                    RootView()
+                    switch interface {
+                    case .pro: RootView()
+                    case .fun: FunRootView()
+                    }
                 } else {
                     SetupFlowView(initialStep: SetupGate.initialStep(hasPairingFile: pairing.hasPairingFile)) {
                         SetupGate.markComplete()
@@ -30,8 +36,10 @@ struct LocusApp: App {
             }
             .environmentObject(session)
             .environmentObject(pairing)
-            // `nil` for .system, which hands the choice back to iOS.
-            .preferredColorScheme(appearance.colorScheme)
+            // `nil` for .system, which hands the choice back to iOS. Fun mode
+            // has one palette and it is a night one — a light map under those
+            // colours is a different app with the lights left on.
+            .preferredColorScheme(interface == .fun ? .dark : appearance.colorScheme)
             .onOpenURL { url in
                 handleIncoming(url)
             }

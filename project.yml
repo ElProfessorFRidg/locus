@@ -16,8 +16,8 @@ settings:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-    MARKETING_VERSION: "1.1.0"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "1.2.0"
+    CURRENT_PROJECT_VERSION: "5"
 targets:
   Locus:
     type: application
@@ -120,8 +120,11 @@ targets:
       - path: Locus/Support/RouteShape.swift
       - path: Locus/Support/SavedPlace.swift
       - path: Locus/Engine/TravelMode.swift
+      - path: Locus/Engine/FunPlan.swift
+      - path: Locus/Support/InterfaceMode.swift
       - path: Locus/Engine/DriveTelemetry.swift
       - path: Locus/Engine/DriveProfile.swift
+      - path: Locus/Engine/DriveProfileChanges.swift
       - path: Locus/Engine/RouteBuilder.swift
       - path: Locus/Engine/RouteSimulator.swift
       - path: Locus/Engine/RouteStorage.swift
