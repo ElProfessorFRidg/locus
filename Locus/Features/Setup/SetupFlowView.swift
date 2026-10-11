@@ -15,6 +15,7 @@ struct SetupFlowView: View {
     @State private var isMovingBack = false
     @State private var appear = false
     @State private var showImporter = false
+    @State private var showNetworkMode = false
     @State private var localDevVPNInstalled = LocalDevVPN.isInstalled
     @State private var tunnelUp = TunnelController.loopbackReachable
     @State private var isConnectingTunnel = false
@@ -53,6 +54,7 @@ struct SetupFlowView: View {
                         welcomePage
                     case .pairing:
                         pairingPage
+                            .safeAreaInset(edge: .bottom, spacing: 0) { networkModeEscape }
                     case .vpn:
                         vpnPage
                     }
@@ -105,6 +107,14 @@ struct SetupFlowView: View {
                 onCancel: { showImporter = false }
             )
             .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showNetworkMode, onDismiss: {
+            // Network mode needs no pairing, so a trusted certificate is as
+            // good as a pairing file for getting past this walkthrough.
+            InterceptIdentity.shared.refreshTrust()
+            if InterceptIdentity.shared.trust == .trusted { onFinished() }
+        }) {
+            NetworkModeView()
         }
         .sheet(item: $troubleBlocker) { blocker in
             TunnelTroubleView(blocker: blocker) { connectTunnel() }
@@ -329,6 +339,24 @@ struct SetupFlowView: View {
                 .padding(.bottom, 28)
             }
         }
+    }
+
+    /// For anyone who can't or won't pair: network mode needs no pairing file and
+    /// no Developer Mode. Sits under the pairing page rather than replacing it,
+    /// since the Developer method is the better one when it's available.
+    private var networkModeEscape: some View {
+        Button {
+            SpoofBackend.current = .network
+            showNetworkMode = true
+        } label: {
+            Text("Can’t pair? Use network mode instead")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 4)
     }
 
     private var importPairingCard: some View {

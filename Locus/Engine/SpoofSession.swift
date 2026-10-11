@@ -250,8 +250,8 @@ final class SpoofSession: ObservableObject {
     // MARK: - Teleport
 
     func teleport(to coordinate: CLLocationCoordinate2D, pairing: PairingStore) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
+        if let problem = SpoofBackend.current.readinessProblem(pairing: pairing) {
+            lastError = problem
             return
         }
         setPin(coordinate)
@@ -323,6 +323,11 @@ final class SpoofSession: ObservableObject {
     private func prepareTunnel() async -> Bool {
         let controller = TunnelController.shared
 
+        // Network mode brings its own tunnel up inside `NetworkSpoofer.set`, and
+        // only Locus' own will do — pointing someone at LocalDevVPN here would
+        // be pointing them at something that can't help.
+        if SpoofBackend.current == .network { return true }
+
         if controller.autoConnect {
             if await controller.ensureConnected() { return true }
         } else if TunnelController.loopbackReachable {
@@ -345,8 +350,8 @@ final class SpoofSession: ObservableObject {
     // MARK: - Joystick
 
     func startJoystick(pairing: PairingStore) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
+        if let problem = SpoofBackend.current.readinessProblem(pairing: pairing) {
+            lastError = problem
             return
         }
         let start = simulated ?? pin ?? locationKeeper.lastKnownCoordinate
@@ -446,8 +451,8 @@ final class SpoofSession: ObservableObject {
         startingAt startDistance: CLLocationDistance = 0,
         roads: [RoadSegment] = []
     ) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
+        if let problem = SpoofBackend.current.readinessProblem(pairing: pairing) {
+            lastError = problem
             return
         }
         guard coordinates.count >= 2 else {

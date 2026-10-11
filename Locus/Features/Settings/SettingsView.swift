@@ -11,6 +11,9 @@ struct SettingsView: View {
 
     @State private var showImporter = false
     @State private var showPairOnDevice = false
+    @State private var showNetworkMode = false
+    @State private var backend = SpoofBackend.current
+    @StateObject private var intercept = InterceptIdentity.shared
     @State private var showNameEasterEgg = false
     @State private var showDriveSettings = false
     @State private var showTunnelAdvanced = false
@@ -36,6 +39,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                methodSection
                 pairingSection
                 tunnelSection
                 if showTunnelAdvanced { tunnelAdvancedSection }
@@ -67,6 +71,9 @@ struct SettingsView: View {
                     onCancel: { showImporter = false }
                 )
                 .ignoresSafeArea()
+            }
+            .sheet(isPresented: $showNetworkMode) {
+                NetworkModeView()
             }
             .sheet(isPresented: $showPairOnDevice) {
                 PairOnDeviceView()
@@ -101,6 +108,46 @@ struct SettingsView: View {
             .onDisappear { saveTunnelIP() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { refresh() }
+            }
+        }
+    }
+
+    // MARK: - Method
+
+    private var methodSection: some View {
+        Section {
+            Picker("Method", selection: $backend) {
+                ForEach(SpoofBackend.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(session.isSpoofing || session.isRouting)
+            .onChange(of: backend) { _, value in SpoofBackend.current = value }
+
+            Text(backend.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if backend == .network {
+                Button {
+                    showNetworkMode = true
+                } label: {
+                    HStack {
+                        Label("Set up network mode", systemImage: "network.badge.shield.half.filled")
+                        Spacer()
+                        Image(systemName: intercept.trust == .trusted
+                              ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(intercept.trust == .trusted
+                                             ? LocusTheme.statusGood : LocusTheme.statusWarn)
+                    }
+                }
+            }
+        } header: {
+            Text("Spoofing method")
+        } footer: {
+            if session.isSpoofing || session.isRouting {
+                Text("Stop spoofing to switch method.")
             }
         }
     }

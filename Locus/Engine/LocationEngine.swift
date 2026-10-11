@@ -21,6 +21,7 @@ enum LocationEngineError: LocalizedError {
         case .locationSet: return "Failed to set simulated coordinates."
         case .locationClear: return "Failed to clear simulated location."
         case .notActive: return "No active simulation session."
+        case .network(let message): return message
         }
     }
 
@@ -38,7 +39,9 @@ enum LocationEngineError: LocalizedError {
     }
 }
 
-/// Thin Swift wrapper around idevice’s DVT location simulation (injects into locationd).
+/// Sets and clears the simulated location, through whichever method
+/// `SpoofBackend.current` names: idevice's DVT location simulation (injects into
+/// locationd), or network mode's rewrite of Apple's positioning replies.
 enum LocationEngine {
     private static let queue = DispatchQueue(label: "com.chrismack.locus.location", qos: .userInitiated)
 
@@ -56,7 +59,9 @@ enum LocationEngine {
     private static let locationSet: Int32 = 11
     private static let locationClear: Int32 = 12
 
-    static var isSessionActive: Bool { locationSimulation != nil }
+    static var isSessionActive: Bool {
+        SpoofBackend.current == .network ? NetworkSpoofer.active.value : locationSimulation != nil
+    }
 
     /// Sends a coordinate to the device.
     ///
@@ -72,7 +77,10 @@ enum LocationEngine {
     /// The serial queue still serialises the FFI, so the C-side session state is
     /// touched by exactly one caller at a time, exactly as before.
     static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) async -> Result<Void, LocationEngineError> {
-        await withCheckedContinuation { continuation in
+        if SpoofBackend.current == .network {
+            return await NetworkSpoofer.shared.set(latitude: latitude, longitude: longitude)
+        }
+        return await withCheckedContinuation { continuation in
             queue.async {
                 let code = setLocked(latitude: latitude, longitude: longitude, pairingPath: pairingPath, deviceIP: deviceIP)
                 continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
@@ -81,7 +89,13 @@ enum LocationEngine {
     }
 
     static func clear() async -> Result<Void, LocationEngineError> {
-        await withCheckedContinuation { continuation in
+        // Both, whatever is selected: a person who switched method mid-spoof
+        // still expects Stop to stop it.
+        if NetworkSpoofer.active.value || SpoofBackend.current == .network {
+            let network = await NetworkSpoofer.shared.clear()
+            if SpoofBackend.current == .network || locationSimulation == nil { return network }
+        }
+        return await withCheckedContinuation { continuation in
             queue.async {
                 let code = clearLocked()
                 continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))

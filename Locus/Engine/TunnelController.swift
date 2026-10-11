@@ -185,8 +185,12 @@ final class TunnelController: ObservableObject {
 
     /// Starts the tunnel and confirms it passes traffic, walking the method
     /// ladder when the first choice comes up connected-but-dead.
+    ///
+    /// - Parameter verify: whether to confirm traffic with a TCP probe to the
+    ///   developer service. Network mode turns it off: it has nothing listening
+    ///   on that port to probe, and brings its own end-to-end check.
     @discardableResult
-    func connect(autoSearch: Bool = true) async -> Bool {
+    func connect(autoSearch: Bool = true, verify: Bool = true) async -> Bool {
         if let blocker = Self.staticBlocker {
             state = .unavailable(blocker)
             return false
@@ -214,7 +218,7 @@ final class TunnelController: ObservableObject {
                 continue
             }
 
-            if await probe() {
+            if !verify || (await probe()) {
                 method = candidate
                 state = .connected(method: candidate, interface: currentInterfaceLabel())
                 refreshDiagnostics()
@@ -237,6 +241,40 @@ final class TunnelController: ObservableObject {
     func disconnect() async {
         await stop()
         if !state.isUnavailable { state = .idle }
+    }
+
+    // MARK: - Talking to the extension
+
+    /// Whether *Locus'* tunnel is up, as opposed to `loopbackReachable`, which is
+    /// true for any tunnel on that subnet — LocalDevVPN included. Network mode
+    /// needs the former: only this extension answers DNS and runs the proxy.
+    var ownTunnelRunning: Bool {
+        manager?.connection.status == .connected
+    }
+
+    /// Brings Locus' own tunnel up if it isn't, without the developer-service
+    /// probe or method ladder.
+    func ensureOwnTunnel() async -> Bool {
+        if ownTunnelRunning { return true }
+        guard Self.isEmbedded, !state.isUnavailable else { return false }
+        return await connect(autoSearch: false, verify: false)
+    }
+
+    /// Sends a provider message to the running extension and decodes its reply.
+    func exchange(_ envelope: InterceptEnvelope) async -> TunnelReply? {
+        guard let session = manager?.connection as? NETunnelProviderSession,
+              session.status == .connected,
+              let message = try? JSONEncoder().encode(envelope) else { return nil }
+
+        return await withCheckedContinuation { continuation in
+            do {
+                try session.sendProviderMessage(message) { reply in
+                    continuation.resume(returning: reply.flatMap { try? JSONDecoder().decode(TunnelReply.self, from: $0) })
+                }
+            } catch {
+                continuation.resume(returning: nil)
+            }
+        }
     }
 
     // MARK: - Manager plumbing
