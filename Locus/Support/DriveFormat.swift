@@ -24,11 +24,21 @@ enum DriveFormat {
             : String(format: "%d:%02d", minutes, secs)
     }
 
-    /// Remaining time at the current speed. Reported in *wall-clock* seconds, so
-    /// a 4× time scale says how long you actually have to wait.
+    /// Time left. Reported in *wall-clock* seconds, so a 4× time scale says how
+    /// long you actually have to wait.
+    ///
+    /// From the drive's own dry run when there is one. Distance over the
+    /// current speed swung from twice too long while braking for a bend to
+    /// half too short at the top of a straight, and vanished at every stop.
     static func eta(telemetry: DriveTelemetry, timeScale: Double) -> String? {
-        guard telemetry.speed > 0.5, telemetry.distanceRemaining > 1 else { return nil }
-        let simulatedSeconds = telemetry.distanceRemaining / telemetry.speed
+        guard telemetry.distanceRemaining > 1 else { return nil }
+        let simulatedSeconds: TimeInterval
+        if let planned = telemetry.timeRemaining {
+            simulatedSeconds = planned
+        } else {
+            guard telemetry.speed > 0.5 else { return nil }
+            simulatedSeconds = telemetry.distanceRemaining / telemetry.speed
+        }
         let realSeconds = simulatedSeconds / max(0.05, timeScale)
         return clock(realSeconds)
     }

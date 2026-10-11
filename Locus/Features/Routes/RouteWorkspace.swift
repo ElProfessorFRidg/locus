@@ -76,6 +76,20 @@ final class RouteWorkspace: ObservableObject {
     /// What the drive will involve — stops, waiting, the speed band, the bends
     /// the grip budget decides. Computed with the preview, from the same plan.
     @Published private(set) var outline: RoutePlan.Outline?
+    /// Simulated seconds one pass of the selected route takes, from a dry run
+    /// of the previewed plan with the current profile. Apple's travel time is
+    /// a real car's; this is the drive's.
+    @Published private(set) var estimatedDriveTime: TimeInterval?
+
+    /// The plan behind the preview, and what it was planned from. Kept so the
+    /// drive can be the one previewed rather than a second roll of the dice.
+    private var preview: (
+        plan: RoutePlan,
+        profile: DriveProfile,
+        mode: TravelMode,
+        coordinates: [CLLocationCoordinate2D],
+        overrides: [LimitOverride]
+    )?
 
     /// Set when the current route came from the saved list, so corrections can
     /// be written back to it.
@@ -200,6 +214,8 @@ final class RouteWorkspace: ObservableObject {
         stretches = []
         previewUsesLimits = false
         outline = nil
+        estimatedDriveTime = nil
+        preview = nil
     }
 
     // MARK: - Selection
@@ -252,6 +268,8 @@ final class RouteWorkspace: ObservableObject {
         stretches = []
         previewUsesLimits = false
         outline = nil
+        estimatedDriveTime = nil
+        preview = nil
     }
 
     /// True when the current route was routed from `stops`, so changing the
@@ -353,6 +371,8 @@ final class RouteWorkspace: ObservableObject {
             stretches = []
             previewUsesLimits = false
             outline = nil
+            estimatedDriveTime = nil
+            preview = nil
             return
         }
 
@@ -368,6 +388,27 @@ final class RouteWorkspace: ObservableObject {
         stretches = plan.stretches()
         previewUsesLimits = plan.usesEstimatedLimits
         outline = plan.outline()
+        estimatedDriveTime = plan.isEmpty ? nil : plan.timeline(profile: profile).total
+        preview = (
+            plan: plan, profile: profile, mode: mode, coordinates: coordinates, overrides: overrides
+        )
+    }
+
+    /// The previewed plan, if it is still a plan of what would be driven now
+    /// with `profile` and `mode`. Nil when anything it was planned from has
+    /// moved since — the drive then plans afresh rather than drive a stale one.
+    func previewedPlan(profile: DriveProfile, mode: TravelMode) -> RoutePlan? {
+        guard let preview,
+              !preview.plan.isEmpty,
+              preview.profile == profile,
+              preview.mode == mode,
+              preview.overrides == overrides else { return nil }
+        let current = activeCoordinates
+        guard preview.coordinates.count == current.count,
+              zip(preview.coordinates, current).allSatisfy({
+                  $0.latitude == $1.latitude && $0.longitude == $1.longitude
+              }) else { return nil }
+        return preview.plan
     }
 
     // MARK: - Overrides
@@ -517,7 +558,8 @@ extension SpoofSession {
             overrides: workspace.overrides,
             recordedSpeed: workspace.recordedSpeedSampler,
             recordedTimes: workspace.selectedRoute?.recordedTimes,
-            roads: workspace.selectedRoute?.roads ?? []
+            roads: workspace.selectedRoute?.roads ?? [],
+            plan: workspace.previewedPlan(profile: drive, mode: travelMode)
         )
         // Counted here rather than at each call site: three places start a
         // drive, and "most driven" is only useful if all three agree. After
