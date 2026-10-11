@@ -33,6 +33,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Favorites & recents
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25
+- **No tunnel? A proxy-app fallback** — Locus writes a Shadowrocket / Surge / Loon / Stash module for the pin, using [ios-location-spoofer](https://github.com/mekos2772/ios-location-spoofer)
 - Fully on-device — no analytics, nothing uploaded
 
 ## Driving a route
@@ -139,6 +140,16 @@ A missing **App Group** is reported separately as a warning, not a blocker: it o
 
 Start a teleport on Wi‑Fi first; the session can keep working on cellular afterward.
 
+### Without the tunnel: proxy apps
+
+When there's no pairing file or no tunnel to be had, Settings → **Proxy app module** offers a second, weaker way to move the phone. iOS works out where it is partly by asking Apple where the Wi‑Fi networks and cell towers around it are; a MITM proxy app — **Shadowrocket, Surge, Loon or Stash** — can rewrite that answer, so the phone concludes it is wherever the answer says.
+
+Locus writes the module for the pin (or the place being simulated): pick the app and an accuracy, then share the file into the app or copy its text. It is always named **Locus**, so importing a new place replaces the old one. The proxy app needs HTTPS decryption on, with its certificate installed and fully trusted, and Location Services toggled off and on after a change.
+
+The rewriting itself is [ios-location-spoofer](https://github.com/mekos2772/ios-location-spoofer) by mekos2772 — the module points the proxy app at its script, which the app downloads from GitHub. That project is AGPL-3.0, so no code from it is copied into Locus; what Locus generates is only the module: the hosts to intercept, where the script lives, and the coordinates.
+
+Know what it doesn't do. It changes the *network* part of the fix only: outdoors, once real GPS has a lock, the phone can drift back home — exactly the gap the developer service doesn't have, which is why that stays the default. Routes and the joystick need the tunnel. And while the module is on, the proxy app decrypts Apple's location lookups, so switch it off when you're done. Quantumult X isn't offered: its rewrite takes no arguments, so there's nothing for Locus to fill in.
+
 ### Pokémon GO & similar games
 
 Locus spoofs location the same way Xcode’s developer tools do: it tells iOS “you’re here,” and other apps read that from the system. Apps that just trust GPS (Apple Maps, etc.) will follow it.
@@ -191,6 +202,7 @@ CI runs it before the archive, so a failing assertion stops the build rather tha
 | | |
 | --- | --- |
 | **`CoordinateParser`** | Its failure mode is silent — a false positive swallows a place search and drops a pin in the Gulf of Guinea. Every shape it accepts, and every one it must refuse. |
+| **Proxy modules** | Text another app parses and Locus never reads back: coordinates always written with a dot whatever the locale, every host and the script in every format, and a place name that can't break out of its header line. |
 | **Persistence** | Synthesised `Codable` throws on one missing key and the loaders answer a throw with an empty list, so "a field was added" and "every route you saved is gone" are one bug apart. |
 | **Geometry** | Pure maths with answers you can check by hand: a 3-4-5 offset measuring 500 m, a 200 m circle measuring 200 m, coordinates that aren't coordinates. |
 | **The driving model** | Fixed-speed plans, stopping at the end, resuming halfway, corrections beating the estimate — and every stored parameter clamped where the engine reads it. |
@@ -204,5 +216,7 @@ Two bugs that had been shipping fell out of the suite's first run — every bend
 MIT. `Vendor/idevice` contains the idevice FFI (MIT).
 
 The built-in tunnel (`LocusTunnel/`) is **based on and uses code from [LocalDevVPN](https://github.com/ElProfessorFRidg/LocalDevVPN) (formerly StosVPN)** by Stossy11 and the SideStore Team, used under the StosVPN License. The packet-rewrite strategies and the cellular-rebind workaround come from that project; the method ladder, the connectivity-confirmed connect and the runtime bundle-ID discovery are Locus'. The same attribution appears in the app under Settings → About.
+
+Proxy app modules (Settings → **Proxy app module**) run the script from [ios-location-spoofer](https://github.com/mekos2772/ios-location-spoofer) by mekos2772, itself built on [acheong08/ios-location-spoofer](https://github.com/acheong08/ios-location-spoofer). It is AGPL-3.0 and is not included in Locus: the proxy app downloads it from that repository, and Locus only writes the module that points at it.
 
 Locus is an independent open-source project and is not affiliated with Mirage / Wapixel.

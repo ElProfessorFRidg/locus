@@ -40,6 +40,7 @@ struct SettingsView: View {
                 tunnelSection
                 if showTunnelAdvanced { tunnelAdvancedSection }
                 drivingSection
+                proxySection
                 appearanceSection
                 privacySection
                 aboutSection
@@ -421,6 +422,25 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Proxy app
+
+    private var proxySection: some View {
+        Section {
+            NavigationLink {
+                ProxyModuleView(
+                    coordinate: session.simulated ?? session.pin,
+                    place: session.simulated != nil ? session.simulatedAddress : session.pinAddress
+                )
+            } label: {
+                Label("Proxy app module", systemImage: "shippingbox")
+            }
+        } header: {
+            Text("Without the tunnel")
+        } footer: {
+            Text("No pairing file, or no way to raise a tunnel? Shadowrocket, Surge, Loon or Stash can move the phone instead, less reliably, with a module Locus writes for the pin.")
+        }
+    }
+
     // MARK: - Rest
 
     private var appearanceSection: some View {
@@ -455,6 +475,9 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             // The StosVPN License requires this to be somewhere prominent.
             Text("The built-in tunnel is based on and uses code from LocalDevVPN (StosVPN) by Stossy11 and the SideStore Team, used under the StosVPN License.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text("Proxy app modules run the ios-location-spoofer script by mekos2772 (AGPL-3.0), which the proxy app downloads itself; none of its code ships in Locus.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
