@@ -27,6 +27,9 @@ final class InterceptIdentity: ObservableObject {
     }
 
     @Published private(set) var trust: Trust = .notCreated
+    /// Why iOS's own evaluation of the leaf failed, verbatim, when it did — the
+    /// difference between "not switched on yet" and "the certificate is wrong".
+    @Published private(set) var trustFailure: String?
 
     struct Material: Codable, Equatable {
         var authority: Data
@@ -149,6 +152,7 @@ final class InterceptIdentity: ObservableObject {
               let authority = SecCertificateCreateWithData(nil, material.authority as CFData),
               let leaf = SecCertificateCreateWithData(nil, material.leaf as CFData) else {
             trust = .notCreated
+            trustFailure = nil
             return
         }
         var evaluation: SecTrust?
@@ -157,10 +161,13 @@ final class InterceptIdentity: ObservableObject {
             SecPolicyCreateSSL(true, InterceptConfig.hosts[0] as CFString),
             &evaluation
         )
-        if let evaluation, SecTrustEvaluateWithError(evaluation, nil) {
+        var failure: CFError?
+        if let evaluation, SecTrustEvaluateWithError(evaluation, &failure) {
             trust = .trusted
+            trustFailure = nil
         } else {
             trust = .notTrusted
+            trustFailure = failure.map { "\(CFErrorCopyDescription($0) as String) (\(CFErrorGetCode($0)))" }
         }
     }
 

@@ -70,6 +70,13 @@ struct NetworkModeView: View {
                     .foregroundStyle(trustColor)
             }
 
+            if identity.trust == .notTrusted, let failure = identity.trustFailure {
+                Text("iOS says: \(failure)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             if identity.trust != .trusted {
                 Button {
                     Task { await installCertificate() }
