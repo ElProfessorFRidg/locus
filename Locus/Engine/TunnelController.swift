@@ -345,7 +345,6 @@ final class TunnelController: ObservableObject {
         @unknown default: return "unknown"
         }
     }
-    }
 
     // MARK: - Manager plumbing
 

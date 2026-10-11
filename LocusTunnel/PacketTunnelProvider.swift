@@ -222,6 +222,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         interceptLock.unlock()
     }
 
+    /// Synchronous on purpose: `NSLock` can't be taken from an async function.
+    private func markDNSOverrideApplied() {
+        interceptLock.lock()
+        dnsOverrideApplied = dnsOverrideWanted
+        interceptLock.unlock()
+    }
+
     private func setCommandError(_ message: String?) {
         interceptLock.lock()
         lastCommandError = message
@@ -310,9 +317,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return false
         }
         lastAppliedSettings = settings
-        interceptLock.lock()
-        dnsOverrideApplied = dnsOverrideWanted
-        interceptLock.unlock()
+        markDNSOverrideApplied()
         return true
     }
 
