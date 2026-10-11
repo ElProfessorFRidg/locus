@@ -62,7 +62,7 @@ final class InterceptProxy: @unchecked Sendable {
 
     /// Starts listening with `identity` as the server certificate. Returns once
     /// the listener is ready or has failed.
-    func start(identity: SecIdentity) async -> Bool {
+    func start(identity: SecIdentity, bindAddress: String) async -> Bool {
         if isRunning { return true }
         guard let secIdentity = sec_identity_create(identity) else {
             fail("couldn't wrap the certificate identity")
@@ -75,10 +75,19 @@ final class InterceptProxy: @unchecked Sendable {
         let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
         parameters.allowLocalEndpointReuse = true
 
+        // Bound to the tunnel's own address, not every interface: the packet loop
+        // delivers the steered connections there, and nothing else on the Wi-Fi
+        // should be able to reach (or relay through) this port.
+        guard let port = NWEndpoint.Port(rawValue: InterceptConfig.listenPort),
+              let address = IPv4Address(bindAddress) else {
+            fail("bad listen address \(bindAddress)")
+            return false
+        }
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(address), port: port)
+
         let listener: NWListener
         do {
-            guard let port = NWEndpoint.Port(rawValue: InterceptConfig.listenPort) else { return false }
-            listener = try NWListener(using: parameters, on: port)
+            listener = try NWListener(using: parameters)
         } catch {
             fail("couldn't listen on \(InterceptConfig.listenPort): \(error.localizedDescription)")
             return false
@@ -91,13 +100,20 @@ final class InterceptProxy: @unchecked Sendable {
 
         let ready = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let gate = OnceGate()
-            listener.stateUpdateHandler = { [weak self] state in
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
                 switch state {
                 case .ready:
                     if gate.claim() { continuation.resume(returning: true) }
                 case .failed(let error):
                     self?.fail("listener failed: \(error.localizedDescription)")
-                    self?.locked { self?.listener = nil }
+                    // Only this listener's own failure may take the running state
+                    // away: a different one that never became current must not
+                    // orphan the one that did.
+                    self?.locked {
+                        guard let self, let listener, self.listener === listener else { return }
+                        self.listener = nil
+                        self.status.listening = false
+                    }
                     if gate.claim() { continuation.resume(returning: false) }
                 case .cancelled:
                     if gate.claim() { continuation.resume(returning: false) }
@@ -294,6 +310,9 @@ final class InterceptProxy: @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// For the provider to record a failure that isn't the proxy's own.
+    func noteError(_ message: String) { fail(message) }
 
     private func fail(_ message: String) {
         locked { status.lastError = message }

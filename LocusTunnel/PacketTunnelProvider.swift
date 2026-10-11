@@ -48,6 +48,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private lazy var proxy = InterceptProxy { [weak self] message in self?.log(message) }
     private let interceptLock = NSLock()
     private var interceptActive = false
+    /// Whether the DNS override is part of the settings iOS has accepted. Kept
+    /// apart from `interceptActive` so turning off can drop the override while
+    /// the packet loop is still answering for the hosts.
+    private var dnsOverrideWanted = false
+    private var dnsOverrideApplied = false
+    private var lastCommandError: String?
+    /// Commands run one after another, in the order they arrived.
+    private var commandTail: Task<Void, Never>?
     private var interceptIdentity: SecIdentity?
 
     /// The last path line written to the log. Path updates arrive in bursts every
@@ -127,7 +135,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             settings.ipv6Settings = ipv6
         }
 
-        if isIntercepting {
+        if isDNSOverrideWanted {
             // Only the location hosts are sent here; every other name resolves
             // exactly as it did before.
             let dns = NEDNSSettings(servers: [tunnelFakeIP])
@@ -146,6 +154,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         pathMonitor.pathUpdateHandler = nil
         pathMonitor.cancel()
         setIntercepting(false)
+        setDNSOverrideWanted(false)
         proxy.stop()
         proxy.setTarget(nil)
         lastAppliedSettings = nil
@@ -159,12 +168,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// always says how the proxy is getting on.
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         let command = (try? JSONDecoder().decode(InterceptEnvelope.self, from: messageData))?.intercept
-        Task { [weak self] in
+        // One at a time: `apply` waits in several places, and two messages
+        // interleaving there (a resend overlapping a stop) can leave the DNS
+        // override on with nothing listening, or the reverse.
+        interceptLock.lock()
+        let previous = commandTail
+        commandTail = Task { [weak self] in
+            await previous?.value
             guard let self else { completionHandler?(nil); return }
             if let command { await self.apply(command) }
-            let reply = TunnelReply(method: self.method.rawValue, fakeIP: self.tunnelFakeIP, intercept: self.proxy.snapshot())
+            let reply = self.makeReply()
             completionHandler?(try? JSONEncoder().encode(reply))
         }
+        interceptLock.unlock()
+    }
+
+    private func makeReply() -> TunnelReply {
+        interceptLock.lock()
+        let intercepting = interceptActive
+        let dnsApplied = dnsOverrideApplied
+        let error = lastCommandError
+        interceptLock.unlock()
+        return TunnelReply(
+            method: method.rawValue, fakeIP: tunnelFakeIP, intercept: proxy.snapshot(),
+            intercepting: intercepting, dnsApplied: dnsApplied, commandError: error
+        )
     }
 
     // MARK: - Network mode
@@ -181,11 +209,39 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         interceptLock.unlock()
     }
 
+    private var isDNSOverrideWanted: Bool {
+        interceptLock.lock()
+        defer { interceptLock.unlock() }
+        return dnsOverrideWanted
+    }
+
+    private func setDNSOverrideWanted(_ value: Bool) {
+        interceptLock.lock()
+        dnsOverrideWanted = value
+        if !value { dnsOverrideApplied = false }
+        interceptLock.unlock()
+    }
+
+    private func setCommandError(_ message: String?) {
+        interceptLock.lock()
+        lastCommandError = message
+        interceptLock.unlock()
+        if let message { proxy.noteError(message) }
+    }
+
     private func apply(_ command: InterceptCommand) async {
+        setCommandError(nil)
+
         guard command.enabled else {
-            guard isIntercepting else { proxy.setTarget(nil); proxy.stop(); return }
+            guard isIntercepting || isDNSOverrideWanted else { proxy.setTarget(nil); proxy.stop(); return }
+            // Order matters. Take the override out first and let answers already
+            // cached on the phone expire while the packet loop and proxy still
+            // serve them; only then stop answering. The other way round, lookups
+            // time out and cached connections are reset.
+            setDNSOverrideWanted(false)
+            _ = await applySettings()
+            try? await Task.sleep(nanoseconds: UInt64(InterceptConfig.dnsTTL + 1) * 1_000_000_000)
             setIntercepting(false)
-            await applySettings()
             proxy.setTarget(nil)
             proxy.stop()
             log("Network mode off")
@@ -194,6 +250,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         if let cert = command.leafCertificate, let key = command.leafPrivateKey {
             guard let identity = InterceptIdentityLoader.load(certificate: cert, privateKey: key) else {
+                setCommandError("The certificate identity couldn't be loaded.")
                 log("Network mode: the certificate identity couldn't be loaded", isError: true)
                 return
             }
@@ -208,29 +265,43 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         guard let identity = interceptIdentity else {
+            setCommandError("No certificate has reached the tunnel yet.")
             log("Network mode: no certificate yet", isError: true)
             return
         }
-        guard await proxy.start(identity: identity) else { return }
+        guard await proxy.start(identity: identity, bindAddress: tunnelDeviceIP) else { return }
 
-        if !isIntercepting {
+        if !isDNSOverrideWanted {
             await proxy.primeResolver()
             setIntercepting(true)
-            await applySettings()
-            log("Network mode on: \(InterceptConfig.hosts.count) hosts now resolve to \(tunnelFakeIP)")
+            setDNSOverrideWanted(true)
+            if await applySettings() {
+                log("Network mode on: \(InterceptConfig.hosts.count) hosts now resolve to \(tunnelFakeIP)")
+            } else {
+                // Not in force, so don't claim it is: back out to the plain tunnel.
+                setDNSOverrideWanted(false)
+                setIntercepting(false)
+                _ = await applySettings()
+                setCommandError("iOS refused the DNS settings that send the location hosts to the tunnel.")
+            }
         }
     }
 
-    private func applySettings() async {
+    /// Applies the current settings; `true` if iOS accepted them.
+    private func applySettings() async -> Bool {
         let settings = makeSettings()
         let error: Error? = await withCheckedContinuation { continuation in
             setTunnelNetworkSettings(settings) { continuation.resume(returning: $0) }
         }
         if let error {
             log("Reapplying tunnel settings failed: \(error)", isError: true)
-        } else {
-            lastAppliedSettings = settings
+            return false
         }
+        lastAppliedSettings = settings
+        interceptLock.lock()
+        dnsOverrideApplied = dnsOverrideWanted
+        interceptLock.unlock()
+        return true
     }
 
     // MARK: - Path monitoring

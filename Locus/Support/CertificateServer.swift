@@ -64,7 +64,8 @@ final class CertificateServer {
 
         self.listener = listener
         background = UIApplication.shared.beginBackgroundTask(withName: "LocusCertificateServer") { [weak self] in
-            Task { @MainActor in self?.stop() }
+            // Ended before the handler returns, as UIKit requires.
+            MainActor.assumeIsolated { self?.stop() }
         }
         scheduleStop(after: 120)
         return URL(string: "http://127.0.0.1:\(port.rawValue)/\(Self.fileName)")

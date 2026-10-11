@@ -34,7 +34,17 @@ final class InterceptIdentity: ObservableObject {
         var leafKey: Data
         var hosts: [String]
         var created: Date
+        /// How long the leaf was issued for, in days. Absent on material made
+        /// before the lifetime was capped; that material is regenerated.
+        var leafDays: Int?
     }
+
+    /// iOS rejects a TLS server certificate valid for more than 825 days, user-
+    /// installed roots included (Apple HT210176). Stay well inside it.
+    static let leafDays = 800
+    /// Renew this long before the leaf expires. The authority's key is gone, so
+    /// renewing means a new authority and the person installing it again.
+    static let renewalWindowDays = 30
 
     private(set) var material: Material?
 
@@ -59,7 +69,8 @@ final class InterceptIdentity: ObservableObject {
     func ensureCreated() throws {
         if let material,
            material.hosts == InterceptConfig.hosts,
-           material.created.addingTimeInterval(4 * 365 * 86_400) > Date() {
+           material.leafDays == Self.leafDays,
+           material.created.addingTimeInterval(TimeInterval(Self.leafDays - Self.renewalWindowDays) * 86_400) > Date() {
             return
         }
         try regenerate()
@@ -94,7 +105,7 @@ final class InterceptIdentity: ObservableObject {
             subjectCN: authorityName,
             issuerCN: authorityName,
             notBefore: notBefore,
-            notAfter: now.addingTimeInterval(5 * 365 * 86_400),
+            notAfter: now.addingTimeInterval(TimeInterval(Self.leafDays + 60) * 86_400),
             subjectPublicKey: authorityPoint,
             subjectKeyID: authorityID,
             authorityKeyID: nil,
@@ -106,7 +117,7 @@ final class InterceptIdentity: ObservableObject {
             subjectCN: "Locus Location Host",
             issuerCN: authorityName,
             notBefore: notBefore,
-            notAfter: now.addingTimeInterval(4.5 * 365 * 86_400),
+            notAfter: now.addingTimeInterval(TimeInterval(Self.leafDays) * 86_400),
             subjectPublicKey: leafPoint,
             subjectKeyID: Self.keyID(leafPoint),
             authorityKeyID: authorityID,
@@ -118,7 +129,7 @@ final class InterceptIdentity: ObservableObject {
             throw error!.takeRetainedValue()
         }
 
-        let created = Material(authority: authority, leaf: leaf, leafKey: leafPrivate as Data, hosts: hosts, created: now)
+        let created = Material(authority: authority, leaf: leaf, leafKey: leafPrivate as Data, hosts: hosts, created: now, leafDays: Self.leafDays)
         try Self.write(created, to: fileURL)
         material = created
         refreshTrust()

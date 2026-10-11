@@ -19,6 +19,15 @@ enum InterceptDNS {
     /// staying silent would make the client wait out a timeout, and answering
     /// AAAA would let it route around the tunnel over IPv6.
     static func reply(to packet: Data, server: UInt32, hosts: [String], answer: UInt32, ttl: UInt32) -> (packet: Data, name: String)? {
+        // Cheap rejection through a read-only view: nearly every packet in the
+        // tunnel is not a DNS question for us, and none should be copied.
+        let candidate = packet.withUnsafeBytes { raw -> Bool in
+            guard raw.count >= 28, raw[0] >> 4 == 4 else { return false }
+            let ihl = Int(raw[0] & 0x0F) * 4
+            guard ihl >= 20, raw.count >= ihl + 8, raw[9] == 17 else { return false }
+            return raw[ihl + 2] == 0 && raw[ihl + 3] == 53
+        }
+        guard candidate else { return nil }
         let p = [UInt8](packet)
         guard p.count >= 28, p[0] >> 4 == 4 else { return nil }
         let ihl = Int(p[0] & 0x0F) * 4

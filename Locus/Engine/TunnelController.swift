@@ -290,13 +290,21 @@ final class TunnelController: ObservableObject {
               session.status == .connected,
               let message = try? JSONEncoder().encode(envelope) else { return nil }
 
+        // The reply handler may never fire if the extension dies mid-message, so
+        // the first of reply and timeout wins.
         return await withCheckedContinuation { continuation in
+            let once = NetworkSpoofer.Flag()
             do {
                 try session.sendProviderMessage(message) { reply in
+                    guard once.claim() else { return }
                     continuation.resume(returning: reply.flatMap { try? JSONDecoder().decode(TunnelReply.self, from: $0) })
                 }
             } catch {
-                continuation.resume(returning: nil)
+                if once.claim() { continuation.resume(returning: nil) }
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
+                if once.claim() { continuation.resume(returning: nil) }
             }
         }
     }

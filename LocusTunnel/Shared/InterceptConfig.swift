@@ -85,4 +85,11 @@ struct TunnelReply: Codable {
     var method: String
     var fakeIP: String
     var intercept: InterceptStatus?
+    /// Whether packets are being intercepted, and whether the DNS override that
+    /// sends the location hosts here is actually in force. `nil` from an older
+    /// extension.
+    var intercepting: Bool?
+    var dnsApplied: Bool?
+    /// Why the last command couldn't be carried out, if it couldn't.
+    var commandError: String?
 }
