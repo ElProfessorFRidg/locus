@@ -187,10 +187,11 @@ final class TunnelController: ObservableObject {
     /// ladder when the first choice comes up connected-but-dead.
     ///
     /// - Parameter verify: whether to confirm traffic with a TCP probe to the
-    ///   developer service. Network mode turns it off: it has nothing listening
-    ///   on that port to probe, and brings its own end-to-end check.
+    ///   developer service. Off in network mode: without Developer Mode nothing
+    ///   listens on that port, so the probe would fail every method in turn and
+    ///   tear down a tunnel that works fine. Network mode has its own check.
     @discardableResult
-    func connect(autoSearch: Bool = true, verify: Bool = true) async -> Bool {
+    func connect(autoSearch: Bool = true, verify: Bool = SpoofBackend.current == .developer) async -> Bool {
         if let blocker = Self.staticBlocker {
             state = .unavailable(blocker)
             return false
@@ -218,7 +219,8 @@ final class TunnelController: ObservableObject {
                 continue
             }
 
-            if !verify || (await probe()) {
+            let carriesTraffic = verify ? await probe() : true
+            if carriesTraffic {
                 method = candidate
                 state = .connected(method: candidate, interface: currentInterfaceLabel())
                 refreshDiagnostics()
@@ -255,9 +257,31 @@ final class TunnelController: ObservableObject {
     /// Brings Locus' own tunnel up if it isn't, without the developer-service
     /// probe or method ladder.
     func ensureOwnTunnel() async -> Bool {
+        // Something else may be connecting already (the launch task, a tap on
+        // the status bar); wait for it rather than failing because it's busy.
+        for _ in 0..<100 where state.isBusy {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        if ownTunnelRunning { return true }
+        await attachIfRunning()
         if ownTunnelRunning { return true }
         guard Self.isEmbedded, !state.isUnavailable else { return false }
         return await connect(autoSearch: false, verify: false)
+    }
+
+    /// Picks up Locus' tunnel if it is already running — left up by an earlier
+    /// launch, or started on demand — without saving anything or starting it.
+    func attachIfRunning() async {
+        guard manager == nil, let providerID = Self.providerBundleIdentifier,
+              let all = try? await NETunnelProviderManager.loadAllFromPreferences(),
+              let ours = all.first(where: {
+                  ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == providerID
+              }),
+              ours.connection.status == .connected else { return }
+        manager = ours
+        if !state.isUnavailable {
+            state = .connected(method: method, interface: currentInterfaceLabel())
+        }
     }
 
     /// Sends a provider message to the running extension and decodes its reply.

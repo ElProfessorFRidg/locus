@@ -201,7 +201,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if interceptIdentity != nil { proxy.stop() }
             interceptIdentity = identity
         }
-        proxy.setTarget(.init(latitude: command.latitude, longitude: command.longitude, accuracy: command.accuracy))
+        if let latitude = command.latitude, let longitude = command.longitude {
+            proxy.setTarget(.init(latitude: latitude, longitude: longitude, accuracy: command.accuracy))
+        } else {
+            proxy.setTarget(nil)
+        }
 
         guard let identity = interceptIdentity else {
             log("Network mode: no certificate yet", isError: true)

@@ -287,9 +287,14 @@ final class SpoofSession: ObservableObject {
         isBusy = false
         switch result {
         case .success:
+            let wasNetwork = SpoofBackend.current == .network && simulated != nil
             simulated = nil
             status = .idle
             endBackground()
+            if wasNetwork {
+                // iOS keeps the positions it was given until it next asks.
+                flash("Stopped — turn Location Services off and on to get your real location back")
+            }
             // Keep location updates running so the map puck / locate button
             // can return to the real GPS fix (not the leftover pin).
             locationKeeper.start()
@@ -298,6 +303,21 @@ final class SpoofSession: ObservableObject {
             status = .dropped(error.localizedDescription)
             postDropNotification(error.localizedDescription)
         }
+    }
+
+    /// Network mode keeps going without the app: the extension holds the
+    /// coordinate. On launch, pick that spoof back up instead of showing "not
+    /// spoofing" over one that is still in force.
+    func adoptNetworkSpoofIfRunning(pairing: PairingStore) async {
+        guard SpoofBackend.current == .network, status == .idle, simulated == nil,
+              let running = await NetworkSpoofer.shared.adoptRunning() else { return }
+        let coordinate = CLLocationCoordinate2D(latitude: running.latitude, longitude: running.longitude)
+        simulated = coordinate
+        setPin(coordinate)
+        status = .active
+        beginBackground()
+        startResend(pairing: pairing)
+        startHealth(pairing: pairing)
     }
 
     /// Best-known real device coordinate (not the teleport pin).
@@ -922,7 +942,13 @@ final class SpoofSession: ObservableObject {
                 // walker both come through here, and buzzing once a second for
                 // an hour is not confirmation, it's a fault.
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                flash("Now at \(suggestedFavoriteName(for: coordinate))")
+                if SpoofBackend.current == .network {
+                    // Nothing has moved yet: the reply is only rewritten when iOS
+                    // next asks Apple, and saying "now at" before that is a lie.
+                    flash("Set to \(suggestedFavoriteName(for: coordinate)) — turn Location Services off and on so iOS asks again")
+                } else {
+                    flash("Now at \(suggestedFavoriteName(for: coordinate))")
+                }
             }
         case .failure(let error):
             lastError = error.localizedDescription

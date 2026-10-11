@@ -36,13 +36,33 @@ final class NetworkSpoofer: ObservableObject {
     /// `isSessionActive` is.
     nonisolated static let active = Flag()
 
-    /// Whether the extension has been given the certificate since it last
-    /// started. Re-sent whenever a reply says the listener isn't up.
-    private var identitySent = false
+    /// Which certificate the extension was last given (by creation date), so a
+    /// regenerated one is sent again instead of the extension carrying on with
+    /// a leaf iOS no longer trusts. Cleared whenever a reply says the listener
+    /// isn't up — a restarted extension has no certificate at all.
+    private var sentIdentity: Date?
 
     // MARK: - Setting and clearing
 
+    /// When the coordinate last changed, to tell a reply rewritten for *this*
+    /// spoof from one rewritten for the last.
+    private var targetChangedAt: Date?
+    private var lastTarget: (latitude: Double, longitude: Double)?
+
+    /// Whether iOS has fetched — and been given — a rewritten reply since the
+    /// coordinate was last set. Until then the phone hasn't moved, whatever the
+    /// app has asked for.
+    var hasTakenEffect: Bool {
+        guard let rewrite = status?.lastRewrite else { return false }
+        guard let changed = targetChangedAt else { return true }
+        return rewrite >= changed
+    }
+
     func set(latitude: Double, longitude: Double) async -> Result<Void, LocationEngineError> {
+        if lastTarget?.latitude != latitude || lastTarget?.longitude != longitude {
+            lastTarget = (latitude, longitude)
+            targetChangedAt = Date()
+        }
         do {
             try InterceptIdentity.shared.ensureCreated()
         } catch {
@@ -63,22 +83,22 @@ final class NetworkSpoofer: ObservableObject {
         // as a reply saying the listener isn't running.
         for _ in 0..<2 {
             var command = InterceptCommand(enabled: true, latitude: latitude, longitude: longitude, accuracy: Self.accuracy)
-            if !identitySent {
+            if sentIdentity != material.created {
                 command.leafCertificate = material.leaf
                 command.leafPrivateKey = material.leafKey
             }
             guard let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) else {
-                identitySent = false
+                sentIdentity = nil
                 Self.active.value = false
                 return .failure(.network("The tunnel didn’t answer."))
             }
             status = reply.intercept
             if reply.intercept?.listening == true {
-                identitySent = true
+                sentIdentity = material.created
                 Self.active.value = true
                 return .success(())
             }
-            identitySent = false
+            sentIdentity = nil
         }
         Self.active.value = false
         return .failure(.network(status?.lastError ?? "The tunnel’s proxy didn’t start."))
@@ -92,6 +112,21 @@ final class NetworkSpoofer: ObservableObject {
             status = reply.intercept
         }
         return .success(())
+    }
+
+    /// A spoof the extension is still carrying from before the app was closed:
+    /// it doesn't need the app to keep going, so on launch the app asks rather
+    /// than reporting "not spoofing" over one that is in force.
+    func adoptRunning() async -> (latitude: Double, longitude: Double)? {
+        await refreshStatus()
+        guard let status, status.listening,
+              let latitude = status.latitude, let longitude = status.longitude else { return nil }
+        // The extension keeps the identity it was given; only the app forgot.
+        sentIdentity = InterceptIdentity.shared.material?.created
+        lastTarget = (latitude, longitude)
+        targetChangedAt = nil
+        Self.active.value = true
+        return (latitude, longitude)
     }
 
     /// Re-reads the extension's counters, for the live numbers on the setup page.
@@ -128,16 +163,16 @@ final class NetworkSpoofer: ObservableObject {
             : .failed("Tunnel", "Locus’ own tunnel isn’t running — LocalDevVPN can’t do network mode."))
 
         if tunnelUp, identity.trust == .trusted, let material = identity.material {
-            // A harmless position, only so the proxy exists to be tested. The
-            // real coordinate replaces it on the next set.
+            // Interception on, rewriting off: the proxy exists to be tested, and
+            // any reply iOS happens to fetch meanwhile goes through untouched.
             if !Self.active.value {
                 let command = InterceptCommand(
-                    enabled: true, latitude: 0, longitude: 0, accuracy: Self.accuracy,
+                    enabled: true, latitude: nil, longitude: nil, accuracy: Self.accuracy,
                     leafCertificate: material.leaf, leafPrivateKey: material.leafKey
                 )
                 if let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) {
                     status = reply.intercept
-                    identitySent = reply.intercept?.listening == true
+                    sentIdentity = reply.intercept?.listening == true ? material.created : nil
                 }
             }
 

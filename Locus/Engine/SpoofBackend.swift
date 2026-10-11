@@ -55,6 +55,9 @@ enum SpoofBackend: String, CaseIterable, Identifiable {
             if let blocker = TunnelController.staticBlocker {
                 return "Network mode needs Locus’ own tunnel, and this build can’t run it (\(blocker.title.lowercased()))."
             }
+            // Re-read rather than trusting a cached answer: the person may have
+            // switched the certificate on in Settings since this was last asked.
+            InterceptIdentity.shared.refreshTrust()
             switch InterceptIdentity.shared.trust {
             case .trusted:
                 return nil

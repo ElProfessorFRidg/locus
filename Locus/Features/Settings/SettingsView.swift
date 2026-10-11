@@ -107,7 +107,10 @@ struct SettingsView: View {
             .fullScreenCover(isPresented: $showNameEasterEgg) {
                 LocusEasterEggView()
             }
-            .onAppear { refresh() }
+            .onAppear {
+                refresh()
+                intercept.refreshTrust()
+            }
             // Swiping a sheet down is how sheets get dismissed; only "Done"
             // used to save the tunnel IP, so the normal gesture threw the edit
             // away without a word.
@@ -316,7 +319,10 @@ struct SettingsView: View {
             // Works whoever raised the tunnel: it is the same handshake the
             // location engine is about to make, so a pass here means a teleport
             // will get through and a fail means it won't.
-            if loopbackUp || builtInTunnelUsable {
+            // The probe knocks on the developer service, which network mode
+            // doesn't use and which may not be listening at all without
+            // Developer Mode — a "nothing answered" there would be a false alarm.
+            if (loopbackUp || builtInTunnelUsable), backend == .developer {
                 Button {
                     Task { await tunnel.runProbe() }
                 } label: {

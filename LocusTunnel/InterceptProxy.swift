@@ -43,7 +43,11 @@ final class InterceptProxy: @unchecked Sendable {
     func snapshot() -> InterceptStatus { locked { status } }
 
     func setTarget(_ target: WLocRewriter.Target?) {
-        locked { self.target = target }
+        locked {
+            self.target = target
+            status.latitude = target?.latitude
+            status.longitude = target?.longitude
+        }
     }
 
     func noteDNSAnswered() {
@@ -266,7 +270,10 @@ final class InterceptProxy: @unchecked Sendable {
         let outgoing: Data
         if let rewritten = WLocRewriter.rewrite(original, to: currentTarget) {
             outgoing = rewritten.body
-            locked { status.rewritten += 1 }
+            locked {
+                status.rewritten += 1
+                status.lastRewrite = Date()
+            }
             log("Rewrote a positioning reply (\(rewritten.wifi) Wi-Fi, \(rewritten.cell) cell)")
         } else {
             outgoing = original

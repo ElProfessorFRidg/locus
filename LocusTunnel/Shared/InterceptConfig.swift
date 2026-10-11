@@ -41,8 +41,11 @@ enum InterceptConfig {
 /// App → extension.
 struct InterceptCommand: Codable {
     var enabled: Bool
-    var latitude: Double
-    var longitude: Double
+    /// Where to say the phone is. `nil` with `enabled` means "intercept, but
+    /// relay every reply unchanged" — what the self-test uses, so testing never
+    /// moves anyone to 0,0.
+    var latitude: Double?
+    var longitude: Double?
     var accuracy: Int
     /// Sent when the extension has no identity yet (first start, or after the
     /// certificate was regenerated); omitted for plain coordinate updates.
@@ -63,6 +66,12 @@ struct InterceptStatus: Codable, Equatable {
     /// does not trust (yet).
     var handshakeFailures = 0
     var lastError: String?
+    /// The coordinate replies are being rewritten to, if any. Lets the app pick
+    /// a spoof back up after it was closed: the extension kept going without it.
+    var latitude: Double?
+    var longitude: Double?
+    /// When a reply was last rewritten — the one sign iOS actually asked.
+    var lastRewrite: Date?
 }
 
 /// What a provider message from the app may carry. Messages without an

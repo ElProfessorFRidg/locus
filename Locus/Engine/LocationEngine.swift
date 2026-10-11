@@ -10,6 +10,8 @@ enum LocationEngineError: LocalizedError {
     case locationSet
     case locationClear
     case notActive
+    /// Network mode: the message is already a sentence.
+    case network(String)
 
     var errorDescription: String? {
         switch self {

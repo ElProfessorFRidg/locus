@@ -29,9 +29,11 @@ struct ProReadoutView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
             }
+            // Paired start/stop only: in the background iOS stops delivering
+            // foreground-only updates by itself, so scene phase needn't be tracked.
+            .onAppear { probe.start() }
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
-                probe.start()
                 while !Task.isCancelled {
                     if SpoofBackend.current == .network { await spoofer.refreshStatus() }
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -62,7 +64,7 @@ struct ProReadoutView: View {
         } header: {
             Text("Flags iOS attaches")
         } footer: {
-            Text("These come from iOS, not from Locus. The Developer method uses Apple’s simulated-location service, so iOS marks its fixes as simulated. Network mode changes the Wi‑Fi/cell answer instead, so a fix that comes from it isn’t marked.")
+            Text("These come from iOS, not from Locus. The Developer method uses Apple’s simulated-location service, which iOS marks as simulated. Network mode changes the Wi‑Fi/cell answer instead, which shouldn’t be marked — this readout is how you check on your own phone.")
         }
     }
 
@@ -171,7 +173,6 @@ struct ProReadoutView: View {
 /// The same headline in one line, for the map while Pro mode is on.
 struct ProChip: View {
     @StateObject private var probe = LocationProbe.shared
-    @Environment(\.scenePhase) private var scenePhase
     var onTap: () -> Void
 
     var body: some View {
@@ -190,9 +191,7 @@ struct ProChip: View {
             .background(.ultraThinMaterial, in: Capsule())
         }
         .buttonStyle(.plain)
-        .task(id: scenePhase) {
-            if scenePhase == .active { probe.start() } else { probe.stop() }
-        }
+        .onAppear { probe.start() }
         .onDisappear { probe.stop() }
     }
 

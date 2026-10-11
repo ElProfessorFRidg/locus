@@ -111,8 +111,14 @@ struct SetupFlowView: View {
         .sheet(isPresented: $showNetworkMode, onDismiss: {
             // Network mode needs no pairing, so a trusted certificate is as
             // good as a pairing file for getting past this walkthrough.
+            // …and only then is network mode made the method: backing out
+            // half-way leaves the Developer method in place for when pairing
+            // works after all.
             InterceptIdentity.shared.refreshTrust()
-            if InterceptIdentity.shared.trust == .trusted { onFinished() }
+            if InterceptIdentity.shared.trust == .trusted {
+                SpoofBackend.current = .network
+                onFinished()
+            }
         }) {
             NetworkModeView()
         }
@@ -346,7 +352,6 @@ struct SetupFlowView: View {
     /// since the Developer method is the better one when it's available.
     private var networkModeEscape: some View {
         Button {
-            SpoofBackend.current = .network
             showNetworkMode = true
         } label: {
             Text("Can’t pair? Use network mode instead")

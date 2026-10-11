@@ -17,7 +17,7 @@ final class CertificateServer {
     private var shutdown: DispatchWorkItem?
     private var background: UIBackgroundTaskIdentifier = .invalid
 
-    static let fileName = "LocusAuthority.cer"
+    nonisolated static let fileName = "LocusAuthority.cer"
 
     /// Starts serving `certificate` and returns the URL to open, or `nil` if the
     /// listener couldn't start.
@@ -29,12 +29,12 @@ final class CertificateServer {
         guard let listener = try? NWListener(using: parameters) else { return nil }
 
         let response = Self.response(for: certificate)
-        listener.newConnectionHandler = { [weak self] connection in
+        listener.newConnectionHandler = { connection in
             connection.start(queue: .global())
             connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { _, _, _, _ in
                 connection.send(content: response, completion: .contentProcessed { _ in
                     connection.cancel()
-                    Task { @MainActor in self?.scheduleStop(after: 5) }
+                    Task { @MainActor in CertificateServer.shared.scheduleStop(after: 5) }
                 })
             }
         }
