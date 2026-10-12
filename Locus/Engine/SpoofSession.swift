@@ -1011,7 +1011,11 @@ final class SpoofSession: ObservableObject {
                 if SpoofBackend.current == .network {
                     // Nothing has moved yet: the reply is only rewritten when iOS
                     // next asks Apple, and saying "now at" before that is a lie.
-                    flash("Set to \(suggestedFavoriteName(for: coordinate)) — asking iOS to look again")
+                    // GPS wins over network positioning within seconds; with a
+                    // pairing file, Both is what keeps the place from slipping.
+                    flash(pairing.hasPairingFile
+                          ? "Set to \(suggestedFavoriteName(for: coordinate)) — GPS can pull it back; Both holds it"
+                          : "Set to \(suggestedFavoriteName(for: coordinate)) — asking iOS to look again")
                 } else {
                     flash("Now at \(suggestedFavoriteName(for: coordinate))")
                 }

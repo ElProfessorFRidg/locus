@@ -172,6 +172,18 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            // Network mode only steers Wi-Fi and cell positioning; GPS and iOS'
+            // own cache pull the phone back within seconds. With a pairing file
+            // there is a method that holds, so say so where the choice is made.
+            if backend == .network, pairing.hasPairingFile {
+                Button {
+                    backend = .both
+                } label: {
+                    Label("For a position that holds, use Both", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(session.isSpoofing || session.isRouting)
+            }
         } header: {
             Text("Spoofing method")
         } footer: {
