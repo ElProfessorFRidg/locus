@@ -92,4 +92,10 @@ struct TunnelReply: Codable {
     var dnsApplied: Bool?
     /// Why the last command couldn't be carried out, if it couldn't.
     var commandError: String?
+    /// The network-mode step the previous run of the extension was in the middle
+    /// of when it stopped — set only when it never finished, which means iOS
+    /// ended the extension (a crash, or the memory limit) at that point.
+    var previousRunStoppedDuring: String?
+    /// Memory the extension may still allocate before iOS ends it, in MB.
+    var memoryAvailableMB: Int?
 }

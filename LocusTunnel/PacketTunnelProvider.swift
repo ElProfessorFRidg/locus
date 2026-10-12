@@ -18,6 +18,7 @@
 
 import Network
 import NetworkExtension
+import os
 import os.log
 import Security
 
@@ -54,6 +55,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var dnsOverrideWanted = false
     private var dnsOverrideApplied = false
     private var lastCommandError: String?
+    /// Read once at start: the step a previous run died in, if one did.
+    private var previousRunStoppedDuring: String?
     /// Commands run one after another, in the order they arrived.
     private var commandTail: Task<Void, Never>?
     private var interceptIdentity: SecIdentity?
@@ -87,6 +90,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         lastPathDescription = nil
 
         LocusTunnelStatusFile.clear()
+        previousRunStoppedDuring = Breadcrumb.takeLeftover()
+        if let step = previousRunStoppedDuring {
+            log("The previous run stopped while \(step)", isError: true)
+        }
         log("Starting Locus tunnel method=\(method.rawValue) device=\(tunnelDeviceIP) fake=\(tunnelFakeIP)")
         startPathMonitoring()
 
@@ -188,10 +195,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let intercepting = interceptActive
         let dnsApplied = dnsOverrideApplied
         let error = lastCommandError
+        let stoppedDuring = previousRunStoppedDuring
         interceptLock.unlock()
         return TunnelReply(
             method: method.rawValue, fakeIP: tunnelFakeIP, intercept: proxy.snapshot(),
-            intercepting: intercepting, dnsApplied: dnsApplied, commandError: error
+            intercepting: intercepting, dnsApplied: dnsApplied, commandError: error,
+            previousRunStoppedDuring: stoppedDuring,
+            memoryAvailableMB: Breadcrumb.availableMB()
         )
     }
 
@@ -238,6 +248,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func apply(_ command: InterceptCommand) async {
         setCommandError(nil)
+        // Each step marks itself before it starts and the mark is cleared once the
+        // command is done. If iOS ends the extension part-way (a crash, or the
+        // memory limit), the next run finds the mark and reports which step it
+        // was — the only trace there is when the App Group log isn't available.
+        defer { Breadcrumb.end() }
 
         guard command.enabled else {
             guard isIntercepting || isDNSOverrideWanted else { proxy.setTarget(nil); proxy.stop(); return }
@@ -245,6 +260,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // cached on the phone expire while the packet loop and proxy still
             // serve them; only then stop answering. The other way round, lookups
             // time out and cached connections are reset.
+            Breadcrumb.begin("removing the DNS override")
             setDNSOverrideWanted(false)
             _ = await applySettings()
             try? await Task.sleep(nanoseconds: UInt64(InterceptConfig.dnsTTL + 1) * 1_000_000_000)
@@ -256,6 +272,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         if let cert = command.leafCertificate, let key = command.leafPrivateKey {
+            Breadcrumb.begin("loading the certificate into the keychain")
             guard let identity = InterceptIdentityLoader.load(certificate: cert, privateKey: key) else {
                 setCommandError("The certificate identity couldn't be loaded.")
                 log("Network mode: the certificate identity couldn't be loaded", isError: true)
@@ -276,10 +293,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             log("Network mode: no certificate yet", isError: true)
             return
         }
+        Breadcrumb.begin("starting the TLS listener")
         guard await proxy.start(identity: identity, bindAddress: tunnelDeviceIP) else { return }
 
         if !isDNSOverrideWanted {
+            Breadcrumb.begin("looking up the real addresses of the location hosts")
             await proxy.primeResolver()
+            Breadcrumb.begin("switching the DNS override on")
             setIntercepting(true)
             setDNSOverrideWanted(true)
             if await applySettings() {
@@ -648,5 +668,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let b1 = UInt32(parts[0]), let b2 = UInt32(parts[1]),
               let b3 = UInt32(parts[2]), let b4 = UInt32(parts[3]) else { return 0 }
         return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4
+    }
+}
+
+/// A note that survives the extension being ended mid-step. Standard defaults
+/// are written through `cfprefsd`, outside this process, so the note is still
+/// there when iOS starts the extension again.
+private enum Breadcrumb {
+    private static let key = "LocusInterceptStep"
+
+    static func begin(_ step: String) {
+        UserDefaults.standard.set("\(step) (\(availableMB()) MB free)", forKey: key)
+    }
+
+    static func end() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    static func takeLeftover() -> String? {
+        let step = UserDefaults.standard.string(forKey: key)
+        end()
+        return step
+    }
+
+    static func availableMB() -> Int {
+        Int(os_proc_available_memory() / 1_048_576)
     }
 }

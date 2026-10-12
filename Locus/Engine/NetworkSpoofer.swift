@@ -116,7 +116,8 @@ final class NetworkSpoofer: ObservableObject {
             guard let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) else {
                 sentIdentity = nil
                 Self.active.value = false
-                return .failure(.network("The tunnel didn’t answer. \(TunnelController.shared.lastExchangeFailure ?? "")"))
+                let why = await explainSilence()
+                return .failure(.network("The tunnel didn’t answer. \(why)"))
             }
             status = reply.intercept
             if Self.isInForce(reply) {
@@ -132,6 +133,21 @@ final class NetworkSpoofer: ObservableObject {
     }
 
     private var lastReplyError: String?
+
+    /// No reply at all almost always means iOS ended the extension mid-command.
+    /// Bring it back up and ask the new run what the old one was doing.
+    private func explainSilence() async -> String {
+        let fallback = TunnelController.shared.lastExchangeFailure ?? ""
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        guard await TunnelController.shared.ensureOwnTunnel(),
+              let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: nil)) else {
+            return fallback
+        }
+        status = reply.intercept
+        guard let step = reply.previousRunStoppedDuring else { return fallback }
+        let memory = reply.memoryAvailableMB.map { " It now has \($0) MB to spare." } ?? ""
+        return "iOS stopped the tunnel extension while \(step).\(memory)"
+    }
 
     /// Listening alone isn't a spoof: the DNS override has to be in force too.
     /// Replies from an older extension don't say, and are judged on listening.
