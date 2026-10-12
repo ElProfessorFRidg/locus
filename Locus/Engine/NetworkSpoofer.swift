@@ -18,6 +18,8 @@ final class NetworkSpoofer: ObservableObject {
     static let accuracy = 30
 
     @Published private(set) var status: InterceptStatus?
+    /// The extension's latest log lines, from its last reply.
+    @Published private(set) var extensionLog: [String] = []
     @Published private(set) var checks: [Check] = []
     @Published private(set) var isChecking = false
     /// A nudge is running: see `nudge()`.
@@ -122,7 +124,7 @@ final class NetworkSpoofer: ObservableObject {
                 let why = await explainSilence(after: Int(Date().timeIntervalSince(sentAt)))
                 return .failure(.network("The tunnel didn’t answer. \(why)"))
             }
-            status = reply.intercept
+            absorb(reply)
             if Self.isInForce(reply) {
                 sentIdentity = material.created
                 Self.active.value = true
@@ -161,7 +163,7 @@ final class NetworkSpoofer: ObservableObject {
             accuracy: Self.accuracy, nudge: true
         )
         if let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) {
-            status = reply.intercept
+            absorb(reply)
         }
 
         LocationProbe.shared.start()
@@ -187,7 +189,7 @@ final class NetworkSpoofer: ObservableObject {
             let second = TunnelController.shared.lastExchangeFailure ?? "No reply."
             return "\(first) (after \(seconds) s) A status check right after got no answer either: \(second)"
         }
-        status = reply.intercept
+        absorb(reply)
         let version = reply.protocolVersion.map { "v\($0)" } ?? "an older extension"
         let memory = reply.memoryAvailableMB.map { ", \($0) MB free" } ?? ""
         let uptime = reply.uptimeSeconds.map { ", running for \($0) s" } ?? ""
@@ -214,7 +216,7 @@ final class NetworkSpoofer: ObservableObject {
             guard TunnelController.shared.ownTunnelRunning else { return .success(()) }
             let command = InterceptCommand(enabled: false, latitude: 0, longitude: 0, accuracy: Self.accuracy)
             if let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) {
-                status = reply.intercept
+                absorb(reply)
             }
             return .success(())
         }
@@ -239,8 +241,14 @@ final class NetworkSpoofer: ObservableObject {
     func refreshStatus() async {
         guard TunnelController.shared.ownTunnelRunning,
               let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: nil)) else { return }
-        status = reply.intercept
+        absorb(reply)
         lastIsInForce = Self.isInForce(reply)
+    }
+
+    /// Every reply carries the counters and the extension's latest log lines.
+    private func absorb(_ reply: TunnelReply) {
+        status = reply.intercept
+        if let lines = reply.recentLog { extensionLog = lines }
     }
 
     private var lastIsInForce = false
@@ -284,7 +292,7 @@ final class NetworkSpoofer: ObservableObject {
                     command.leafPrivateKey = material.leafKey
                 }
                 if let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) {
-                    status = reply.intercept
+                    absorb(reply)
                     sentIdentity = Self.isInForce(reply) ? material.created : nil
                 }
             }

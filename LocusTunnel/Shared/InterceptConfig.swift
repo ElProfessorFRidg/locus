@@ -144,4 +144,8 @@ struct TunnelReply: Codable {
     var protocolVersion: Int?
     /// Seconds since this run of the extension started.
     var uptimeSeconds: Int?
+    /// The extension's most recent log lines, newest last. The log file lives
+    /// in the App Group, which re-signed builds usually lose; this is the same
+    /// log, carried in the reply instead.
+    var recentLog: [String]?
 }

@@ -166,6 +166,21 @@ struct NetworkModeView: View {
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
+            if !spoofer.extensionLog.isEmpty {
+                // The extension's own log, carried in its replies: on a build
+                // without the App Group this is the only place it can be read.
+                DisclosureGroup("Extension log (\(spoofer.extensionLog.count) lines)") {
+                    Text(spoofer.extensionLog.joined(separator: "\n"))
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        UIPasteboard.general.string = spoofer.extensionLog.joined(separator: "\n")
+                    } label: {
+                        Label("Copy log", systemImage: "doc.on.doc")
+                    }
+                }
+            }
         } header: {
             Text("Activity")
         } footer: {

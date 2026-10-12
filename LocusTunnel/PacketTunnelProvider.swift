@@ -244,7 +244,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             previousRunStoppedDuring: stoppedDuring,
             memoryAvailableMB: Breadcrumb.availableMB(),
             protocolVersion: InterceptConfig.protocolVersion,
-            uptimeSeconds: Int(Date().timeIntervalSince(startedAt))
+            uptimeSeconds: Int(Date().timeIntervalSince(startedAt)),
+            recentLog: recentLogSnapshot()
         )
     }
 
@@ -441,6 +442,39 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func log(_ message: String, isError: Bool = false) {
         os_log("%{public}@", log: osLog, type: isError ? .error : .info, message)
         LocusTunnelStatusFile.write(message)
+        let stamp = Self.logTime.string(from: Date())
+        recentLogLock.lock()
+        recentLog.append("\(stamp) \(isError ? "⚠︎ " : "")\(message)")
+        if recentLog.count > 40 { recentLog.removeFirst(recentLog.count - 40) }
+        recentLogLock.unlock()
+    }
+
+    /// The last 40 log lines, for replies. Its own lock: `log` is called from the
+    /// packet loop, the path monitor and the proxy's queue as well as commands.
+    private var recentLog: [String] = []
+    private let recentLogLock = NSLock()
+
+    private static let logTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    /// Names already logged as answered this run: the first lookup of each is
+    /// worth a line (it proves iOS asks this tunnel), the hundredth is not.
+    private var answeredNames: Set<String> = []
+
+    private func noteFirstAnswer(for name: String) {
+        recentLogLock.lock()
+        let isNew = answeredNames.insert(name.lowercased()).inserted
+        recentLogLock.unlock()
+        if isNew { log("DNS: answered \(name) with \(tunnelFakeIP)") }
+    }
+
+    private func recentLogSnapshot() -> [String] {
+        recentLogLock.lock()
+        defer { recentLogLock.unlock() }
+        return recentLog
     }
 
     // MARK: - Packet rewriting
@@ -492,6 +526,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 answer: fakeIPValue, ttl: InterceptConfig.dnsTTL
             ) {
                 proxy.noteDNSAnswered()
+                noteFirstAnswer(for: answer.name)
                 out.append(answer.packet)
                 continue
             }
