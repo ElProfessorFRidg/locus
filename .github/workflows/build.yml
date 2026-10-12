@@ -9,6 +9,11 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
+    # A push that only touches prose has nothing to build. (Path filters don't
+    # apply to tag pushes, so a release tag always builds.)
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
   workflow_dispatch:
 
 permissions:
@@ -25,6 +30,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The logic tests, on the Mac itself. They are pure Swift (see the LocusTests
+  # target in project.yml), so they need no iOS simulator — booting one was
+  # most of what this used to cost. Runs alongside `build`; `publish` waits for
+  # both, so a failing test still keeps a build from being released.
+  test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Describe the logic tests as a Swift package
+        run: python3 .github/scripts/logic-package.py
+
+      - name: Cache the package build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-logic-${{ runner.os }}-${{ hashFiles('project.yml', 'Tests/**', 'Locus/**/*.swift', 'LocusTunnel/Shared/**') }}
+          restore-keys: |
+            spm-logic-${{ runner.os }}-
+
+      - name: Test the logic
+        run: swift test
+
   build:
     # macOS 26 for the iOS 26 SDK. Liquid Glass (`glassEffect`,
     # `GlassEffectContainer`) sits behind `#available` guards, but the symbols
@@ -35,6 +69,11 @@ jobs:
     # minutes, so a job past this is stuck and should say so rather than hold a
     # runner all afternoon.
     timeout-minutes: 40
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+      artifact: ${{ steps.version.outputs.artifact }}
+      file: ${{ steps.artifact.outputs.name }}
 
     steps:
       - uses: actions/checkout@v4
@@ -49,54 +88,18 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      # Started first, finished last. A fresh runner's simulator spends about
-      # two minutes in "Data Migration" on its first boot, and nothing else in
-      # this job needs it until the tests run — so it boots in the background
-      # while Homebrew, xcodegen and the test build use the time.
-      #
-      # By UDID, not by name. A name can match several devices across
-      # installed runtimes, and an ambiguous `-destination` is one of the ways
-      # xcodebuild sits there instead of failing.
-      - name: Start booting a simulator
-        run: |
-          set -euo pipefail
-          read -r UDID LABEL < <(xcrun simctl list devices available --json | python3 -c "
-          import json, sys
-          best = None
-          for runtime, devices in json.load(sys.stdin)['devices'].items():
-              if 'iOS' not in runtime:
-                  continue
-              for device in devices:
-                  if not device.get('isAvailable') or not device['name'].startswith('iPhone'):
-                      continue
-                  # Highest runtime wins, then the later-sorting device name.
-                  key = (runtime, device['name'])
-                  if best is None or key > best[0]:
-                      best = (key, device['udid'], f\"{device['name']} ({runtime.split('.')[-1]})\")
-          print(f'{best[1]} {best[2]}' if best else '')
-          ")
-          test -n "${UDID:-}" || { echo '::error::No iPhone simulator available'; exit 1; }
-          echo "Booting $LABEL — $UDID in the background"
-          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
-          echo "SIM_LABEL=$LABEL" >> "$GITHUB_ENV"
-          xcrun simctl boot "$UDID" 2>/dev/null || true
-
-      # coreutils is here for `gtimeout`: macOS ships no GNU `timeout`, and a
-      # test step that can hang needs one.
-      #
-      # Homebrew's auto-update and cleanup are what make a three-package install
+      # Homebrew's auto-update and cleanup are what make a two-package install
       # slow on a fresh runner, and neither changes what gets installed.
       - name: Install build tools
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
           HOMEBREW_NO_ENV_HINTS: "1"
-        run: brew install xcodegen xcbeautify coreutils
+        run: brew install xcodegen xcbeautify
 
       # Incremental builds: DerivedData keyed on the project definition, with the
       # last run's cache as the fallback so a push that touches a few files
-      # recompiles those files instead of everything. `restore-keys` is the point;
-      # an exact-match-only key would miss on every commit.
+      # recompiles those files instead of everything.
       - name: Cache DerivedData
         uses: actions/cache@v4
         with:
@@ -120,50 +123,7 @@ jobs:
           VERSION=$(awk '/MARKETING_VERSION:/ { gsub(/[":]/, "", $2); print $2; exit }' project.yml)
           echo "version=${VERSION:-0.0.0}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
-
-      # Runs before the archive: a failing assertion should stop the build
-      # rather than publish an IPA nobody has reason to trust.
-      #
-      # The test bundle is hosted by nothing on purpose — the app links a
-      # device-only static library, so anything hosted by it can't run on a
-      # simulator at all. See the LocusTests target in project.yml.
-      - name: Test the logic
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-
-          # Compile first, against a generic destination: no simulator needed,
-          # so this overlaps the boot started above instead of waiting on it.
-          # One architecture — the runner's — rather than every simulator slice.
-          gtimeout 900 xcodebuild build-for-testing \
-            -project Locus.xcodeproj \
-            -scheme LocusTests \
-            -destination "generic/platform=iOS Simulator" \
-            -derivedDataPath build/DerivedData \
-            ONLY_ACTIVE_ARCH=YES \
-            ARCHS=arm64 \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            | xcbeautify
-
-          # Now wait for the simulator. `bootstatus` is the supported way to
-          # block until it is ready; letting xcodebuild boot it is where this
-          # step once hung. "Data Migration Failed" on a fresh runner is
-          # harmless — the device still boots — so it warns rather than fails.
-          echo "Testing on $SIM_LABEL — $SIM_UDID"
-          gtimeout 300 xcrun simctl bootstatus "$SIM_UDID" -b \
-            || echo "::warning::bootstatus didn't report a clean boot; trying the tests anyway"
-
-          # Architecture spelled out, so the destination matches exactly one
-          # run destination instead of "the first of multiple matching".
-          gtimeout 600 xcodebuild test-without-building \
-            -project Locus.xcodeproj \
-            -scheme LocusTests \
-            -destination "platform=iOS Simulator,id=$SIM_UDID,arch=arm64" \
-            -destination-timeout 120 \
-            -derivedDataPath build/DerivedData \
-            -parallel-testing-enabled NO \
-            | xcbeautify
+          echo "artifact=Locus-${VERSION:-0.0.0}-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
       # Unsigned: this IPA is re-signed locally with AltStore / SideStore /
       # Feather / Sideloadly / ESign before installing. Entitlements aren't
@@ -181,6 +141,7 @@ jobs:
             -archivePath build/Locus.xcarchive \
             -derivedDataPath build/DerivedData \
             COMPILER_INDEX_STORE_ENABLE=NO \
+            DEBUG_INFORMATION_FORMAT=dwarf \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -253,16 +214,28 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Locus-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
+          name: ${{ steps.version.outputs.artifact }}
           path: ${{ steps.artifact.outputs.name }}
           retention-days: 30
           if-no-files-found: error
 
+  # Releases only what both jobs vouched for: the tests passed and the .ipa
+  # built. On Linux, because all it does is talk to GitHub.
+  publish:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the .ipa
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+
       - name: Decide where this build gets published
         id: release
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SHORT_SHA: ${{ needs.build.outputs.short_sha }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -285,8 +258,8 @@ jobs:
 
       - name: Write release notes
         env:
-          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
-          FILE: ${{ steps.artifact.outputs.name }}
+          SHORT_SHA: ${{ needs.build.outputs.short_sha }}
+          FILE: ${{ needs.build.outputs.file }}
         run: |
           cat > release-notes.md <<EOF
           Unsigned build of \`${SHORT_SHA}\` on \`${GITHUB_REF_NAME}\`. Re-sign before installing — AltStore, SideStore, Feather, Sideloadly or ESign.
@@ -305,7 +278,7 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           TITLE: ${{ steps.release.outputs.title }}
           ROLLING: ${{ steps.release.outputs.rolling }}
-          FILE: ${{ steps.artifact.outputs.name }}
+          FILE: ${{ needs.build.outputs.file }}
         run: |
           set -euo pipefail
 
@@ -340,7 +313,7 @@ jobs:
       - name: Show the download link
         env:
           TAG: ${{ steps.release.outputs.tag }}
-          FILE: ${{ steps.artifact.outputs.name }}
+          FILE: ${{ needs.build.outputs.file }}
         run: |
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${FILE}"
           {
