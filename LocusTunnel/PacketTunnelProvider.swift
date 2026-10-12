@@ -57,6 +57,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastCommandError: String?
     /// Read once at start: the step a previous run died in, if one did.
     private var previousRunStoppedDuring: String?
+    private var startedAt = Date()
     /// Commands run one after another, in the order they arrived.
     private var commandTail: Task<Void, Never>?
     private var interceptIdentity: SecIdentity?
@@ -90,6 +91,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         lastPathDescription = nil
 
         LocusTunnelStatusFile.clear()
+        startedAt = Date()
         previousRunStoppedDuring = Breadcrumb.takeLeftover()
         if let step = previousRunStoppedDuring {
             log("The previous run stopped while \(step)", isError: true)
@@ -201,7 +203,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             method: method.rawValue, fakeIP: tunnelFakeIP, intercept: proxy.snapshot(),
             intercepting: intercepting, dnsApplied: dnsApplied, commandError: error,
             previousRunStoppedDuring: stoppedDuring,
-            memoryAvailableMB: Breadcrumb.availableMB()
+            memoryAvailableMB: Breadcrumb.availableMB(),
+            protocolVersion: InterceptConfig.protocolVersion,
+            uptimeSeconds: Int(Date().timeIntervalSince(startedAt))
         )
     }
 
@@ -671,24 +675,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 }
 
-/// A note that survives the extension being ended mid-step. Standard defaults
-/// are written through `cfprefsd`, outside this process, so the note is still
-/// there when iOS starts the extension again.
+/// A note that survives the extension being ended mid-step. A plain file in
+/// the extension's own Caches, written synchronously: once `write` returns the
+/// bytes are the kernel's, so they outlive a crash or a memory kill. (Standard
+/// defaults were the first try, but they reach disk asynchronously.)
 private enum Breadcrumb {
-    private static let key = "LocusInterceptStep"
+    private static let url: URL? = FileManager.default
+        .urls(for: .cachesDirectory, in: .userDomainMask).first?
+        .appendingPathComponent("intercept-step.txt")
 
     static func begin(_ step: String) {
-        UserDefaults.standard.set("\(step) (\(availableMB()) MB free)", forKey: key)
+        guard let url else { return }
+        try? Data("\(step) (\(availableMB()) MB free)".utf8).write(to: url)
     }
 
     static func end() {
-        UserDefaults.standard.removeObject(forKey: key)
+        guard let url else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     static func takeLeftover() -> String? {
-        let step = UserDefaults.standard.string(forKey: key)
+        guard let url, let data = try? Data(contentsOf: url) else { return nil }
         end()
-        return step
+        return String(decoding: data, as: UTF8.self)
     }
 
     static func availableMB() -> Int {

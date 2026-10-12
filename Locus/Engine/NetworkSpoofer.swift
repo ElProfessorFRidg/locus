@@ -113,10 +113,11 @@ final class NetworkSpoofer: ObservableObject {
                 command.leafCertificate = material.leaf
                 command.leafPrivateKey = material.leafKey
             }
+            let sentAt = Date()
             guard let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) else {
                 sentIdentity = nil
                 Self.active.value = false
-                let why = await explainSilence()
+                let why = await explainSilence(after: Int(Date().timeIntervalSince(sentAt)))
                 return .failure(.network("The tunnel didn’t answer. \(why)"))
             }
             status = reply.intercept
@@ -136,17 +137,27 @@ final class NetworkSpoofer: ObservableObject {
 
     /// No reply at all almost always means iOS ended the extension mid-command.
     /// Bring it back up and ask the new run what the old one was doing.
-    private func explainSilence() async -> String {
-        let fallback = TunnelController.shared.lastExchangeFailure ?? ""
+    /// Says plainly what was observed, branch by branch, so a screenshot of the
+    /// message is enough to tell the cases apart.
+    private func explainSilence(after seconds: Int) async -> String {
+        let first = TunnelController.shared.lastExchangeFailure ?? "No reply."
         try? await Task.sleep(nanoseconds: 1_000_000_000)
-        guard await TunnelController.shared.ensureOwnTunnel(),
-              let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: nil)) else {
-            return fallback
+        guard await TunnelController.shared.ensureOwnTunnel() else {
+            return "\(first) (after \(seconds) s) The tunnel couldn’t be brought back up afterwards."
+        }
+        guard let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: nil)) else {
+            let second = TunnelController.shared.lastExchangeFailure ?? "No reply."
+            return "\(first) (after \(seconds) s) A status check right after got no answer either: \(second)"
         }
         status = reply.intercept
-        guard let step = reply.previousRunStoppedDuring else { return fallback }
-        let memory = reply.memoryAvailableMB.map { " It now has \($0) MB to spare." } ?? ""
-        return "iOS stopped the tunnel extension while \(step).\(memory)"
+        let version = reply.protocolVersion.map { "v\($0)" } ?? "an older extension"
+        let memory = reply.memoryAvailableMB.map { ", \($0) MB free" } ?? ""
+        let uptime = reply.uptimeSeconds.map { ", running for \($0) s" } ?? ""
+        let facts = "[\(version)\(uptime)\(memory)]"
+        if let step = reply.previousRunStoppedDuring {
+            return "iOS stopped the tunnel extension while \(step). \(facts)"
+        }
+        return "\(first) (after \(seconds) s) The extension still answers a status check and didn’t restart. \(facts)"
     }
 
     /// Listening alone isn't a spoof: the DNS override has to be in force too.

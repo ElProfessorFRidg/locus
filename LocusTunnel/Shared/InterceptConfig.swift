@@ -34,6 +34,10 @@ enum InterceptConfig {
     /// back within seconds rather than when a cached answer finally expires.
     static let dnsTTL: UInt32 = 5
 
+    /// Bumped whenever the app ↔ extension messages change, and echoed in every
+    /// reply, so a message can say which extension actually answered.
+    static let protocolVersion = 4
+
     /// Name of the certificate authority and leaf in the keychain / UI.
     static let authorityName = "Locus Location Authority"
 }
@@ -98,4 +102,8 @@ struct TunnelReply: Codable {
     var previousRunStoppedDuring: String?
     /// Memory the extension may still allocate before iOS ends it, in MB.
     var memoryAvailableMB: Int?
+    /// `InterceptConfig.protocolVersion` of the extension that answered.
+    var protocolVersion: Int?
+    /// Seconds since this run of the extension started.
+    var uptimeSeconds: Int?
 }
