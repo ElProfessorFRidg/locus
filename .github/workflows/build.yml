@@ -49,6 +49,38 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      # Started first, finished last. A fresh runner's simulator spends about
+      # two minutes in "Data Migration" on its first boot, and nothing else in
+      # this job needs it until the tests run — so it boots in the background
+      # while Homebrew, xcodegen and the test build use the time.
+      #
+      # By UDID, not by name. A name can match several devices across
+      # installed runtimes, and an ambiguous `-destination` is one of the ways
+      # xcodebuild sits there instead of failing.
+      - name: Start booting a simulator
+        run: |
+          set -euo pipefail
+          read -r UDID LABEL < <(xcrun simctl list devices available --json | python3 -c "
+          import json, sys
+          best = None
+          for runtime, devices in json.load(sys.stdin)['devices'].items():
+              if 'iOS' not in runtime:
+                  continue
+              for device in devices:
+                  if not device.get('isAvailable') or not device['name'].startswith('iPhone'):
+                      continue
+                  # Highest runtime wins, then the later-sorting device name.
+                  key = (runtime, device['name'])
+                  if best is None or key > best[0]:
+                      best = (key, device['udid'], f\"{device['name']} ({runtime.split('.')[-1]})\")
+          print(f'{best[1]} {best[2]}' if best else '')
+          ")
+          test -n "${UDID:-}" || { echo '::error::No iPhone simulator available'; exit 1; }
+          echo "Booting $LABEL — $UDID in the background"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          echo "SIM_LABEL=$LABEL" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+
       # coreutils is here for `gtimeout`: macOS ships no GNU `timeout`, and a
       # test step that can hang needs one.
       #
@@ -100,43 +132,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          # By UDID, not by name. A name can match several devices across
-          # installed runtimes, and an ambiguous `-destination` is one of the
-          # ways xcodebuild sits there instead of failing.
-          read -r UDID LABEL < <(xcrun simctl list devices available --json | python3 -c "
-          import json, sys
-          best = None
-          for runtime, devices in json.load(sys.stdin)['devices'].items():
-              if 'iOS' not in runtime:
-                  continue
-              for device in devices:
-                  if not device.get('isAvailable') or not device['name'].startswith('iPhone'):
-                      continue
-                  # Highest runtime wins, then the later-sorting device name.
-                  key = (runtime, device['name'])
-                  if best is None or key > best[0]:
-                      best = (key, device['udid'], f\"{device['name']} ({runtime.split('.')[-1]})\")
-          print(f'{best[1]} {best[2]}' if best else '')
-          ")
-          test -n "${UDID:-}" || { echo '::error::No iPhone simulator available'; exit 1; }
-          echo "Testing on $LABEL — $UDID"
-
-          # Boot it ourselves and wait for it. Letting xcodebuild boot the
-          # simulator is where the first run of this step hung: it waits on the
-          # device without a deadline, and `bootstatus` is the supported way to
-          # block until it is actually ready.
-          xcrun simctl boot "$UDID" 2>/dev/null || true
-          gtimeout 300 xcrun simctl bootstatus "$UDID" -b
-
-          gtimeout 900 xcodebuild test \
+          # Compile first, against a generic destination: no simulator needed,
+          # so this overlaps the boot started above instead of waiting on it.
+          # One architecture — the runner's — rather than every simulator slice.
+          gtimeout 900 xcodebuild build-for-testing \
             -project Locus.xcodeproj \
             -scheme LocusTests \
-            -destination "id=$UDID" \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath build/DerivedData \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify
+
+          # Now wait for the simulator. `bootstatus` is the supported way to
+          # block until it is ready; letting xcodebuild boot it is where this
+          # step once hung. "Data Migration Failed" on a fresh runner is
+          # harmless — the device still boots — so it warns rather than fails.
+          echo "Testing on $SIM_LABEL — $SIM_UDID"
+          gtimeout 300 xcrun simctl bootstatus "$SIM_UDID" -b \
+            || echo "::warning::bootstatus didn't report a clean boot; trying the tests anyway"
+
+          # Architecture spelled out, so the destination matches exactly one
+          # run destination instead of "the first of multiple matching".
+          gtimeout 600 xcodebuild test-without-building \
+            -project Locus.xcodeproj \
+            -scheme LocusTests \
+            -destination "platform=iOS Simulator,id=$SIM_UDID,arch=arm64" \
             -destination-timeout 120 \
             -derivedDataPath build/DerivedData \
             -parallel-testing-enabled NO \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
             | xcbeautify
 
       # Unsigned: this IPA is re-signed locally with AltStore / SideStore /
