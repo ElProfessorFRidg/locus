@@ -60,6 +60,10 @@ struct InterceptCommand: Codable {
     /// certificate was regenerated); omitted for plain coordinate updates.
     var leafCertificate: Data?
     var leafPrivateKey: Data?
+    /// Reapply the tunnel's network settings once the command is done. iOS
+    /// treats that as a network change, which is one of the things that makes
+    /// it look its position up again.
+    var nudge: Bool?
 }
 
 /// Extension → app.

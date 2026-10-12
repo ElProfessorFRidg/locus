@@ -158,7 +158,7 @@ struct SettingsView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            if backend == .network {
+            if backend.usesNetwork {
                 Button {
                     showNetworkMode = true
                 } label: {

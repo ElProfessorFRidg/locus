@@ -62,7 +62,44 @@ enum LocationEngine {
     private static let locationClear: Int32 = 12
 
     static var isSessionActive: Bool {
-        SpoofBackend.current == .network ? NetworkSpoofer.active.value : locationSimulation != nil
+        switch SpoofBackend.current {
+        case .developer: return locationSimulation != nil
+        case .network: return NetworkSpoofer.active.value
+        case .both: return locationSimulation != nil || NetworkSpoofer.active.value
+        }
+    }
+
+    /// In `both`, where network mode last pointed and when. A route sends a fix
+    /// up to four times a second; network mode only matters for where iOS next
+    /// asks Apple, so it is told about a move only when the fix has gone far
+    /// enough, or long enough, to matter.
+    private static let networkPush = NetworkPush()
+
+    final class NetworkPush: @unchecked Sendable {
+        private let lock = NSLock()
+        private var last: (latitude: Double, longitude: Double, at: Date)?
+
+        func isDue(latitude: Double, longitude: Double) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let last else { return true }
+            let metresPerDegree = 111_000.0
+            let dLat = (latitude - last.latitude) * metresPerDegree
+            let dLon = (longitude - last.longitude) * metresPerDegree * cos(latitude * .pi / 180)
+            return (dLat * dLat + dLon * dLon).squareRoot() > 150 || Date().timeIntervalSince(last.at) > 30
+        }
+
+        func record(latitude: Double, longitude: Double) {
+            lock.lock()
+            last = (latitude, longitude, Date())
+            lock.unlock()
+        }
+
+        func reset() {
+            lock.lock()
+            last = nil
+            lock.unlock()
+        }
     }
 
     /// Sends a coordinate to the device.
@@ -79,21 +116,35 @@ enum LocationEngine {
     /// The serial queue still serialises the FFI, so the C-side session state is
     /// touched by exactly one caller at a time, exactly as before.
     static func set(latitude: Double, longitude: Double, pairingPath: String, deviceIP: String) async -> Result<Void, LocationEngineError> {
-        if SpoofBackend.current == .network {
+        let backend = SpoofBackend.current
+        if backend == .network {
             return await NetworkSpoofer.shared.set(latitude: latitude, longitude: longitude)
         }
-        return await withCheckedContinuation { continuation in
+        let developer: Result<Void, LocationEngineError> = await withCheckedContinuation { continuation in
             queue.async {
                 let code = setLocked(latitude: latitude, longitude: longitude, pairingPath: pairingPath, deviceIP: deviceIP)
                 continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
             }
         }
+        // In `both` the developer service is what the fix depends on, so its
+        // result is the answer; network mode is best-effort underneath and its
+        // failures show up in Settings › Network mode rather than stopping a
+        // spoof that is working.
+        if backend == .both, case .success = developer,
+           networkPush.isDue(latitude: latitude, longitude: longitude) {
+            networkPush.record(latitude: latitude, longitude: longitude)
+            if case .failure = await NetworkSpoofer.shared.set(latitude: latitude, longitude: longitude) {
+                networkPush.reset()
+            }
+        }
+        return developer
     }
 
     static func clear() async -> Result<Void, LocationEngineError> {
         // Both, whatever is selected: a person who switched method mid-spoof
         // still expects Stop to stop it.
-        if NetworkSpoofer.active.value || SpoofBackend.current == .network {
+        networkPush.reset()
+        if NetworkSpoofer.active.value || SpoofBackend.current.usesNetwork {
             let network = await NetworkSpoofer.shared.clear()
             if SpoofBackend.current == .network || locationSimulation == nil { return network }
         }

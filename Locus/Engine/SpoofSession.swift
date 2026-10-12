@@ -310,7 +310,7 @@ final class SpoofSession: ObservableObject {
         isBusy = false
         switch result {
         case .success:
-            let wasNetwork = SpoofBackend.current == .network && simulated != nil
+            let wasNetwork = SpoofBackend.current.usesNetwork && simulated != nil
             simulated = nil
             status = .idle
             endBackground()
@@ -332,7 +332,7 @@ final class SpoofSession: ObservableObject {
     /// coordinate. On launch, pick that spoof back up instead of showing "not
     /// spoofing" over one that is still in force.
     func adoptNetworkSpoofIfRunning(pairing: PairingStore) async {
-        guard SpoofBackend.current == .network, status == .idle, simulated == nil,
+        guard SpoofBackend.current.usesNetwork, status == .idle, simulated == nil,
               let running = await NetworkSpoofer.shared.adoptRunning() else { return }
         let coordinate = CLLocationCoordinate2D(latitude: running.latitude, longitude: running.longitude)
         simulated = coordinate
@@ -1011,7 +1011,7 @@ final class SpoofSession: ObservableObject {
                 if SpoofBackend.current == .network {
                     // Nothing has moved yet: the reply is only rewritten when iOS
                     // next asks Apple, and saying "now at" before that is a lie.
-                    flash("Set to \(suggestedFavoriteName(for: coordinate)) — turn Location Services off and on so iOS asks again")
+                    flash("Set to \(suggestedFavoriteName(for: coordinate)) — asking iOS to look again")
                 } else {
                     flash("Now at \(suggestedFavoriteName(for: coordinate))")
                 }

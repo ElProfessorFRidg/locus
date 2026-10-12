@@ -21,7 +21,7 @@ struct ProReadoutView: View {
                 verdictSection
                 if let reading = probe.reading { fixSection(reading) }
                 requestedSection
-                if SpoofBackend.current == .network, let status = spoofer.status { networkSection(status) }
+                if SpoofBackend.current.usesNetwork, let status = spoofer.status { networkSection(status) }
                 notesSection
             }
             .navigationTitle("What apps see")
@@ -35,7 +35,7 @@ struct ProReadoutView: View {
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 while !Task.isCancelled {
-                    if SpoofBackend.current == .network { await spoofer.refreshStatus() }
+                    if SpoofBackend.current.usesNetwork { await spoofer.refreshStatus() }
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                 }
             }

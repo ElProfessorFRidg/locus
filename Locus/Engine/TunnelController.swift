@@ -192,7 +192,7 @@ final class TunnelController: ObservableObject {
     ///   listens on that port, so the probe would fail every method in turn and
     ///   tear down a tunnel that works fine. Network mode has its own check.
     @discardableResult
-    func connect(autoSearch: Bool = true, verify: Bool = SpoofBackend.current == .developer) async -> Bool {
+    func connect(autoSearch: Bool = true, verify: Bool = SpoofBackend.current.usesDeveloper) async -> Bool {
         if let blocker = Self.staticBlocker {
             state = .unavailable(blocker)
             return false

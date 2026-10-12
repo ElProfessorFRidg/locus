@@ -355,6 +355,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 setCommandError("iOS refused the DNS settings that send the location hosts to the tunnel.")
             }
         }
+
+        if command.nudge == true, isDNSOverrideWanted {
+            Breadcrumb.begin("reapplying the network settings to nudge iOS")
+            if await applySettings() { log("Nudged iOS with a network change") }
+        }
     }
 
     /// Applies the current settings; `true` if iOS accepted them.

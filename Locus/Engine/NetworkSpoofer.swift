@@ -20,6 +20,8 @@ final class NetworkSpoofer: ObservableObject {
     @Published private(set) var status: InterceptStatus?
     @Published private(set) var checks: [Check] = []
     @Published private(set) var isChecking = false
+    /// A nudge is running: see `nudge()`.
+    @Published private(set) var isNudging = false
 
     enum Check: Identifiable, Equatable {
         case passed(String, String)
@@ -124,6 +126,11 @@ final class NetworkSpoofer: ObservableObject {
             if Self.isInForce(reply) {
                 sentIdentity = material.created
                 Self.active.value = true
+                // A new place, not a resend: get iOS to look again straight away
+                // rather than whenever it next happens to.
+                if !hasTakenEffect, targetChangedAt.map({ Date().timeIntervalSince($0) < 15 }) == true {
+                    Task { await self.nudge() }
+                }
                 return .success(())
             }
             lastReplyError = reply.commandError
@@ -134,6 +141,37 @@ final class NetworkSpoofer: ObservableObject {
     }
 
     private var lastReplyError: String?
+
+    /// Gets iOS to look its position up again, as far as an app can.
+    ///
+    /// There is no API for "ask Apple again"; locationd decides. Two things an
+    /// app can do make it likelier: tell the tunnel to reapply its settings,
+    /// which iOS sees as a network change, and ask Core Location for a fresh,
+    /// best-accuracy fix for a few seconds, which makes locationd scan for
+    /// Wi-Fi and look up access points it hasn't placed recently. Neither
+    /// clears a cache iOS 26 keeps in memory — that still takes a restart —
+    /// so this stops as soon as a rewritten reply has gone out.
+    func nudge() async {
+        guard !isNudging, let target = lastTarget else { return }
+        isNudging = true
+        defer { isNudging = false }
+
+        let command = InterceptCommand(
+            enabled: true, latitude: target.latitude, longitude: target.longitude,
+            accuracy: Self.accuracy, nudge: true
+        )
+        if let reply = await TunnelController.shared.exchange(InterceptEnvelope(intercept: command)) {
+            status = reply.intercept
+        }
+
+        LocationProbe.shared.start()
+        defer { LocationProbe.shared.stop() }
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await refreshStatus()
+            if hasTakenEffect { return }
+        }
+    }
 
     /// No reply at all almost always means iOS ended the extension mid-command.
     /// Bring it back up and ask the new run what the old one was doing.

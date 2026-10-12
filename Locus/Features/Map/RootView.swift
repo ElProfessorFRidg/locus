@@ -88,7 +88,10 @@ struct RootView: View {
         .task {
             // One quiet attempt on launch: if the loopback subnet is already up
             // this does nothing at all, so it costs a check, not a VPN prompt.
-            if SpoofBackend.current == .network {
+            if SpoofBackend.current.usesNetwork {
+                if SpoofBackend.current.usesDeveloper, tunnel.autoConnect {
+                    await tunnel.ensureConnected()
+                }
                 // Network mode raises its own tunnel when it needs one, and a
                 // spoof may still be running from before Locus was closed.
                 await tunnel.attachIfRunning()
@@ -219,6 +222,9 @@ struct StatusBarView: View {
 
     private enum Display {
         case spoof(String)
+        /// Network mode has the coordinate but iOS hasn't asked Apple since.
+        /// Tapping nudges it.
+        case waitingForIOS
         case ready
         case tunnelAction(String)
         case tunnelBusy(String)
@@ -235,7 +241,7 @@ struct StatusBarView: View {
             // Network mode is only "spoofing" once iOS has actually been handed
             // a rewritten reply; before that, say what it's waiting for.
             if SpoofBackend.current == .network, !spoofer.hasTakenEffect {
-                return .spoof("Waiting for iOS to ask…")
+                return .waitingForIOS
             }
             return .spoof("Spoofing")
         case .reconnecting: return .spoof("Reconnecting…")
@@ -264,6 +270,7 @@ struct StatusBarView: View {
     private var title: String {
         switch display {
         case .spoof(let text): return text
+        case .waitingForIOS: return spoofer.isNudging ? "Asking iOS to look again…" : "Set — waiting for iOS"
         case .ready: return "Not Spoofing"
         case .tunnelAction(let text): return text
         case .tunnelBusy(let text): return text
@@ -275,6 +282,7 @@ struct StatusBarView: View {
     private var color: Color {
         switch display {
         case .ready: return Color.primary.opacity(0.55)
+        case .waitingForIOS: return LocusTheme.statusWarn
         case .tunnelAction, .tunnelBusy, .tunnelBlocked: return LocusTheme.statusWarn
         case .tunnelProblem: return LocusTheme.statusBad
         case .spoof:
@@ -292,6 +300,7 @@ struct StatusBarView: View {
     private var isTappable: Bool {
         switch display {
         case .tunnelAction, .tunnelProblem, .tunnelBlocked: return true
+        case .waitingForIOS: return !spoofer.isNudging
         default: return false
         }
     }
@@ -350,10 +359,20 @@ struct StatusBarView: View {
                     .shadow(color: color.opacity(0.7), radius: 4)
             }
 
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
 
             Spacer(minLength: 8)
 
@@ -374,8 +393,34 @@ struct StatusBarView: View {
         }
     }
 
+    /// The second line: where the spoof is, or what a tap will do. On its own
+    /// line so neither it nor the title has to be cut to fit the other.
+    private var subtitle: String? {
+        switch display {
+        case .waitingForIOS:
+            let place = placeLine
+            return spoofer.isNudging
+                ? place
+                : ["Tap to nudge", place].compactMap { $0 }.joined(separator: " · ")
+        case .spoof:
+            guard case .active = session.status else { return nil }
+            return placeLine
+        default:
+            return nil
+        }
+    }
+
+    private var placeLine: String? {
+        guard let sim = session.simulated else { return nil }
+        // An address if one has been resolved for where the fix actually is;
+        // coordinates otherwise, which is what a moving route gets.
+        return session.simulatedAddress ?? String(format: "%.4f, %.4f", sim.latitude, sim.longitude)
+    }
+
     private var statusHint: String {
         switch display {
+        case .waitingForIOS:
+            return "Asks iOS to look up its position again, so the new place takes effect."
         case .tunnelBlocked:
             return "Explains why the built-in tunnel can’t run here, and what to use instead."
         case .tunnelAction:
@@ -402,30 +447,26 @@ struct StatusBarView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(LocusTheme.statusBad)
-        case .spoof:
-            if case .active = session.status, let sim = session.simulated {
-                // An address if one has been resolved for where the fix actually
-                // is; coordinates otherwise, which is what a moving route gets.
-                if let address = session.simulatedAddress {
-                    Text(address)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                } else {
-                    Text(String(format: "%.4f, %.4f", sim.latitude, sim.longitude))
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
+        case .waitingForIOS:
+            if spoofer.isNudging {
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(LocusTheme.accent)
             }
+        case .spoof:
+            EmptyView()
         case .ready, .tunnelBusy:
             EmptyView()
         }
     }
 
     private func handleTap() {
+        if case .waitingForIOS = display {
+            Task { await spoofer.nudge() }
+            return
+        }
         // A build that can never raise its own tunnel gets the explanation and
         // the LocalDevVPN route, not a retry that will fail the same way.
         if let blocker = tunnel.blocker ?? TunnelController.staticBlocker {
