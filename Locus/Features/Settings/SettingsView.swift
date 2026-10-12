@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var showImporter = false
     @State private var showPairOnDevice = false
     @State private var showNetworkMode = false
+    @State private var showBothGuide = false
     @State private var showReadout = false
     @AppStorage(ProMode.defaultsKey) private var proMode = false
     @State private var backend = SpoofBackend.current
@@ -79,6 +80,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showNetworkMode) {
                 NetworkModeView()
+            }
+            .sheet(isPresented: $showBothGuide) {
+                BothGuideView()
             }
             .sheet(isPresented: $showReadout) {
                 ProReadoutView()
@@ -183,6 +187,14 @@ struct SettingsView: View {
                     Label("For a position that holds, use Both", systemImage: "arrow.triangle.merge")
                 }
                 .disabled(session.isSpoofing || session.isRouting)
+            }
+
+            if backend.usesNetwork {
+                Button {
+                    showBothGuide = true
+                } label: {
+                    Label("How to make it hold", systemImage: "list.number")
+                }
             }
         } header: {
             Text("Spoofing method")

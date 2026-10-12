@@ -303,7 +303,15 @@ final class SpoofSession: ObservableObject {
         stopResend()
         stopHealth()
         isBusy = true
-        finishStop(await LocationEngine.clear())
+        // Clearing the developer service needs the tunnel, and reconnects over
+        // it if the old session is gone — so bring it back first if it dropped.
+        if SpoofBackend.current.usesDeveloper {
+            await prepareTunnel()
+        }
+        finishStop(await LocationEngine.clear(
+            pairingPath: pairing.hasPairingFile ? pairing.pairingPath : nil,
+            deviceIP: TunnelConfig.targetIP
+        ))
     }
 
     private func finishStop(_ result: Result<Void, LocationEngineError>) {

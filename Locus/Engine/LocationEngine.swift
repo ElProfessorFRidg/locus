@@ -140,20 +140,33 @@ enum LocationEngine {
         return developer
     }
 
-    static func clear() async -> Result<Void, LocationEngineError> {
+    /// - Parameters: where to reconnect if the developer session has gone —
+    ///   without them, a Stop after the session dropped could only report an
+    ///   error while the phone stayed wherever it was last sent.
+    static func clear(pairingPath: String? = nil, deviceIP: String = TunnelConfig.targetIP) async -> Result<Void, LocationEngineError> {
         // Both, whatever is selected: a person who switched method mid-spoof
         // still expects Stop to stop it.
         networkPush.reset()
-        if NetworkSpoofer.active.value || SpoofBackend.current.usesNetwork {
-            let network = await NetworkSpoofer.shared.clear()
-            if SpoofBackend.current == .network || locationSimulation == nil { return network }
+        let backend = SpoofBackend.current
+        let networkInvolved = NetworkSpoofer.active.value || backend.usesNetwork
+        if backend == .network {
+            return await NetworkSpoofer.shared.clear()
         }
-        return await withCheckedContinuation { continuation in
+
+        // The developer service first: it is what puts the real position back,
+        // and it answers in a moment. Turning network mode off waits out the DNS
+        // cache on purpose (several seconds), so in `both` it finishes behind
+        // the Stop rather than holding the button up.
+        let developer: Result<Void, LocationEngineError> = await withCheckedContinuation { continuation in
             queue.async {
-                let code = clearLocked()
+                let code = clearLocked(pairingPath: pairingPath, deviceIP: deviceIP)
                 continuation.resume(returning: code == ok ? .success(()) : .failure(.from(code: code)))
             }
         }
+        if networkInvolved {
+            Task { _ = await NetworkSpoofer.shared.clear() }
+        }
+        return developer
     }
 
     private static func cleanup() {
@@ -185,6 +198,20 @@ enum LocationEngine {
             }
         }
 
+        let connected = connectLocked(pairingPath: pairingPath, deviceIP: deviceIP)
+        guard connected == ok else { return connected }
+
+        if let setError = location_simulation_set(locationSimulation, latitude, longitude) {
+            idevice_error_free(setError)
+            cleanup()
+            return locationSet
+        }
+        return ok
+    }
+
+    /// A fresh developer session: tunnel handshake, RemoteXPC, the simulation
+    /// service. Leaves `locationSimulation` set on success.
+    private static func connectLocked(pairingPath: String, deviceIP: String) -> Int32 {
         var address = sockaddr_in()
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = in_port_t(49152).bigEndian
@@ -242,17 +269,24 @@ enum LocationEngine {
         // is to keep the pointer and let `cleanup()` free it after the
         // simulation, which is already the order it frees in.
         remoteServer = nil
-
-        if let setError = location_simulation_set(locationSimulation, latitude, longitude) {
-            idevice_error_free(setError)
-            cleanup()
-            return locationSet
-        }
         return ok
     }
 
-    private static func clearLocked() -> Int32 {
-        guard let locationSimulation else { return locationClear }
+    /// Clears the simulated location, reconnecting when it has to. The session
+    /// handle goes stale whenever the tunnel restarts or the app is relaunched
+    /// mid-spoof, but the device keeps simulating — so "no handle" or "the
+    /// handle failed" mean "connect and clear", not "nothing to do".
+    private static func clearLocked(pairingPath: String?, deviceIP: String) -> Int32 {
+        if let locationSimulation {
+            let err = location_simulation_clear(locationSimulation)
+            cleanup()
+            guard let err else { return ok }
+            idevice_error_free(err)
+        }
+        guard let pairingPath else { return locationClear }
+
+        let connected = connectLocked(pairingPath: pairingPath, deviceIP: deviceIP)
+        guard connected == ok, let locationSimulation else { return connected == ok ? locationClear : connected }
         let err = location_simulation_clear(locationSimulation)
         cleanup()
         if let err {
