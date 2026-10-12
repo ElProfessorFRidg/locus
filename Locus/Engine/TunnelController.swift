@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Network
 import NetworkExtension
+import Security
 
 /// Drives Locus' own packet-tunnel extension (`LocusTunnel.appex`) so the
 /// loopback tunnel the developer service needs can be brought up from inside
@@ -285,7 +286,93 @@ final class TunnelController: ObservableObject {
     }
 
     /// Sends a provider message to the running extension and decodes its reply.
+    /// The secret control-channel requests carry. Made once and kept, because
+    /// the tunnel can outlive the app and must still recognise it next launch.
+    static let controlToken: String = {
+        let key = "LocusTunnelControlToken"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty { return existing }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
+            bytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        }
+        let token = bytes.map { String(format: "%02x", $0) }.joined()
+        UserDefaults.standard.set(token, forKey: key)
+        return token
+    }()
+
+    /// Provider message first; when that comes back empty — which some re-signed
+    /// builds do for every message, instantly — the same request goes over the
+    /// control channel through the tunnel itself.
     func exchange(_ envelope: InterceptEnvelope) async -> TunnelReply? {
+        var envelope = envelope
+        envelope.token = Self.controlToken
+        if let reply = await providerExchange(envelope) { return reply }
+        let providerFailure = lastExchangeFailure ?? "No reply."
+        guard manager?.connection.status == .connected else { return nil }
+        if let reply = await controlExchange(envelope) {
+            lastExchangeFailure = nil
+            return reply
+        }
+        lastExchangeFailure = "Provider message: \(providerFailure) Control channel: \(lastExchangeFailure ?? "no reply.")"
+        return nil
+    }
+
+    /// One framed request to the extension's control listener, at the tunnel's
+    /// fake address so the packet loop carries it there.
+    private func controlExchange(_ envelope: InterceptEnvelope) async -> TunnelReply? {
+        guard let body = try? JSONEncoder().encode(envelope),
+              let port = NWEndpoint.Port(rawValue: InterceptConfig.controlPort) else { return nil }
+        let connection = NWConnection(host: NWEndpoint.Host(TunnelConfig.targetIP), port: port, using: .tcp)
+        let queue = DispatchQueue(label: "com.chrismack.locus.control")
+        let seconds = 45
+
+        let outcome: (TunnelReply?, String?) = await withCheckedContinuation { continuation in
+            let once = NetworkSpoofer.Flag()
+            let finish: (TunnelReply?, String?) -> Void = { reply, failure in
+                if once.claim() { continuation.resume(returning: (reply, failure)) }
+            }
+            var buffer = Data()
+            func readMore() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, done, error in
+                    if let data { buffer.append(data) }
+                    if let frame = ControlFrame.take(&buffer) {
+                        if let reply = try? JSONDecoder().decode(TunnelReply.self, from: frame) {
+                            finish(reply, nil)
+                        } else {
+                            finish(nil, "the reply couldn’t be read.")
+                        }
+                    } else if let error {
+                        finish(nil, error.localizedDescription)
+                    } else if done {
+                        finish(nil, "the extension closed the connection.")
+                    } else {
+                        readMore()
+                    }
+                }
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.send(content: ControlFrame.wrap(body), completion: .contentProcessed { error in
+                        if let error { finish(nil, error.localizedDescription) } else { readMore() }
+                    })
+                case .failed(let error), .waiting(let error):
+                    finish(nil, "couldn’t connect (\(error.localizedDescription)).")
+                default:
+                    break
+                }
+            }
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + .seconds(seconds)) {
+                finish(nil, "no reply within \(seconds) seconds.")
+            }
+        }
+        connection.cancel()
+        lastExchangeFailure = outcome.1
+        return outcome.0
+    }
+
+    private func providerExchange(_ envelope: InterceptEnvelope) async -> TunnelReply? {
         guard let session = manager?.connection as? NETunnelProviderSession else {
             lastExchangeFailure = "Locus’ tunnel isn’t set up."
             return nil
@@ -376,6 +463,7 @@ final class TunnelController: ObservableObject {
         proto.providerBundleIdentifier = providerID
         proto.serverAddress = "Locus loopback tunnel (\(TunnelConfig.targetIP))"
         proto.disconnectOnSleep = false
+        proto.providerConfiguration = ["ControlToken": Self.controlToken]
         manager.protocolConfiguration = proto
         manager.isEnabled = true
         manager.onDemandRules = onDemand ? Self.onDemandRules() : []
@@ -428,6 +516,7 @@ final class TunnelController: ObservableObject {
             "TunnelFakeIP": TunnelConfig.targetIP as NSObject,
             "TunnelSubnetMask": TunnelConfig.subnetMask as NSObject,
             "TunnelMethod": candidate.rawValue as NSObject,
+            "ControlToken": Self.controlToken as NSObject,
         ]
 
         do {

@@ -36,7 +36,12 @@ enum InterceptConfig {
 
     /// Bumped whenever the app ↔ extension messages change, and echoed in every
     /// reply, so a message can say which extension actually answered.
-    static let protocolVersion = 4
+    static let protocolVersion = 5
+
+    /// Where the extension listens for the app when provider messages don't get
+    /// through: on the tunnel's own address only, reached through the tunnel
+    /// like everything else it carries.
+    static let controlPort: UInt16 = 8445
 
     /// Name of the certificate authority and leaf in the keychain / UI.
     static let authorityName = "Locus Location Authority"
@@ -82,6 +87,35 @@ struct InterceptStatus: Codable, Equatable {
 /// `intercept` key (the older "which method are you using?" ping) still work.
 struct InterceptEnvelope: Codable {
     var intercept: InterceptCommand?
+    /// The secret the app put in the tunnel's configuration. Required on the
+    /// control channel, which — unlike provider messages — another process on
+    /// the device could also open.
+    var token: String?
+}
+
+/// A 4-byte big-endian length, then that many bytes. One frame each way per
+/// control connection.
+enum ControlFrame {
+    static let maxPayload = 512 * 1024
+
+    static func wrap(_ payload: Data) -> Data {
+        let n = UInt32(payload.count)
+        return Data([UInt8(n >> 24), UInt8(n >> 16 & 0xFF), UInt8(n >> 8 & 0xFF), UInt8(n & 0xFF)]) + payload
+    }
+
+    /// The first complete frame in `buffer`, removed from it; `nil` while it is
+    /// still incomplete. A length over `maxPayload` empties the buffer and
+    /// returns an empty frame, so the reader stops.
+    static func take(_ buffer: inout Data) -> Data? {
+        guard buffer.count >= 4 else { return nil }
+        let b = [UInt8](buffer.prefix(4))
+        let length = Int(b[0]) << 24 | Int(b[1]) << 16 | Int(b[2]) << 8 | Int(b[3])
+        guard length <= maxPayload else { buffer = Data(); return Data() }
+        guard buffer.count >= 4 + length else { return nil }
+        let payload = Data(buffer.dropFirst(4).prefix(length))
+        buffer = Data(buffer.dropFirst(4 + length))
+        return payload
+    }
 }
 
 /// The extension's answer to any provider message.

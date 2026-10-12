@@ -47,6 +47,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// connections to port 443 there are steered to the proxy's listener.
     /// Off until the app asks, so the plain loopback tunnel is unchanged.
     private lazy var proxy = InterceptProxy { [weak self] message in self?.log(message) }
+    /// The channel the app falls back to when provider messages come back empty.
+    private lazy var control = ControlServer(
+        log: { [weak self] message in self?.log(message) },
+        handle: { [weak self] request in await self?.handleControl(request) ?? Data() }
+    )
+    /// The secret from the tunnel's configuration that control requests must
+    /// carry. `nil` when the configuration predates it: then the channel
+    /// refuses everything rather than accept anyone.
+    private var controlToken: String?
     private let interceptLock = NSLock()
     private var interceptActive = false
     /// Whether the DNS override is part of the settings iOS has accepted. Kept
@@ -85,6 +94,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             method = parsed
         }
 
+        controlToken = (options?["ControlToken"] as? String)
+            ?? ((protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration?["ControlToken"] as? String)
         deviceIPValue = ipToUInt32(tunnelDeviceIP)
         fakeIPValue = ipToUInt32(tunnelFakeIP)
         didRebindForCellular = false
@@ -111,6 +122,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.log("Loopback route \(self.tunnelDeviceIP)/\(self.tunnelSubnetMask) active (method=\(self.method.rawValue))")
             self.lastAppliedSettings = settings
             self.readPacketsLoop()
+            // After the settings, so the tunnel's address exists to bind to.
+            self.control.start(bindAddress: self.tunnelDeviceIP)
             completionHandler(nil)
         }
     }
@@ -166,6 +179,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         setDNSOverrideWanted(false)
         proxy.stop()
         proxy.setTarget(nil)
+        control.stop()
         lastAppliedSettings = nil
         lastPathDescription = nil
         completionHandler()
@@ -177,19 +191,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// always says how the proxy is getting on.
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         let command = (try? JSONDecoder().decode(InterceptEnvelope.self, from: messageData))?.intercept
-        // One at a time: `apply` waits in several places, and two messages
-        // interleaving there (a resend overlapping a stop) can leave the DNS
-        // override on with nothing listening, or the reverse.
-        interceptLock.lock()
-        let previous = commandTail
-        commandTail = Task { [weak self] in
-            await previous?.value
-            guard let self else { completionHandler?(nil); return }
-            if let command { await self.apply(command) }
-            let reply = self.makeReply()
+        let task = enqueue(command)
+        Task {
+            let reply = await task.value
             completionHandler?(try? JSONEncoder().encode(reply))
         }
-        interceptLock.unlock()
+    }
+
+    /// The control channel's way in: same commands, same queue, plus the token.
+    private func handleControl(_ request: Data) async -> Data {
+        guard let envelope = try? JSONDecoder().decode(InterceptEnvelope.self, from: request) else {
+            return Data()
+        }
+        guard let expected = controlToken, envelope.token == expected else {
+            var refused = makeReply()
+            refused.commandError = controlToken == nil
+                ? "This tunnel was started without a control token. Stop it in Settings › Tunnel and connect again."
+                : "The control token didn't match."
+            return (try? JSONEncoder().encode(refused)) ?? Data()
+        }
+        let reply = await enqueue(envelope.intercept).value
+        return (try? JSONEncoder().encode(reply)) ?? Data()
+    }
+
+    /// One command at a time, whichever channel it came in on: `apply` waits in
+    /// several places, and two commands interleaving there (a resend overlapping
+    /// a stop) can leave the DNS override on with nothing listening, or the
+    /// reverse. Synchronous so the lock is never held across a suspension.
+    private func enqueue(_ command: InterceptCommand?) -> Task<TunnelReply, Never> {
+        interceptLock.lock()
+        defer { interceptLock.unlock() }
+        let previous = commandTail
+        let task = Task { [self] () -> TunnelReply in
+            await previous?.value
+            if let command { await self.apply(command) }
+            return self.makeReply()
+        }
+        commandTail = Task { _ = await task.value }
+        return task
     }
 
     private func makeReply() -> TunnelReply {

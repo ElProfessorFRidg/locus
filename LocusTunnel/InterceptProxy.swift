@@ -448,6 +448,90 @@ private final class UpstreamResolver: @unchecked Sendable {
     }
 }
 
+// MARK: - Control channel
+
+/// The app's second way in. Provider messages are the documented channel, but
+/// on some re-signed builds they never reach the extension (every reply comes
+/// back empty, instantly). A TCP listener reached through the tunnel itself has
+/// no such dependency.
+///
+/// Bound to the tunnel's own address, so nothing on the Wi-Fi can reach it,
+/// and every request must carry the token from the tunnel's configuration —
+/// another app on the device could still open the port, but not use it.
+final class ControlServer: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.chrismack.locus.tunnel.control")
+    private let lock = NSLock()
+    private var listener: NWListener?
+    private let log: (String) -> Void
+    private let handle: (Data) async -> Data
+
+    init(log: @escaping (String) -> Void, handle: @escaping (Data) async -> Data) {
+        self.log = log
+        self.handle = handle
+    }
+
+    func start(bindAddress: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard listener == nil,
+              let port = NWEndpoint.Port(rawValue: InterceptConfig.controlPort),
+              let address = IPv4Address(bindAddress) else { return }
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(address), port: port)
+        let listener: NWListener
+        do {
+            listener = try NWListener(using: parameters)
+        } catch {
+            log("Control listener couldn't start on \(bindAddress): \(error.localizedDescription)")
+            return
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            Task { await self.serve(connection) }
+        }
+        listener.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready: self?.log("Control channel listening on \(bindAddress):\(InterceptConfig.controlPort)")
+            case .failed(let error): self?.log("Control listener failed: \(error.localizedDescription)")
+            default: break
+            }
+        }
+        listener.start(queue: queue)
+        self.listener = listener
+    }
+
+    func stop() {
+        lock.lock()
+        let old = listener
+        listener = nil
+        lock.unlock()
+        old?.cancel()
+    }
+
+    private func serve(_ connection: NWConnection) async {
+        defer { connection.cancel() }
+        connection.start(queue: queue)
+        do {
+            try await connection.waitUntilReady(timeout: 5)
+            var buffer = Data()
+            while true {
+                if let request = ControlFrame.take(&buffer) {
+                    guard !request.isEmpty else { return }
+                    let reply = await handle(request)
+                    try await connection.sendData(ControlFrame.wrap(reply))
+                    return
+                }
+                let chunk = try await connection.receiveChunk(timeout: 10)
+                if chunk.data.isEmpty && chunk.done { return }
+                buffer.append(chunk.data)
+            }
+        } catch {
+            log("Control connection ended: \(error.localizedDescription)")
+        }
+    }
+}
+
 // MARK: - Identity
 
 enum InterceptIdentityLoader {
