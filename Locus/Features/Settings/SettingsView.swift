@@ -22,6 +22,15 @@ struct SettingsView: View {
     @State private var loopbackUp = TunnelController.loopbackReachable
     @AppStorage(LocusAppearance.defaultsKey) private var appearance = LocusAppearance.dark
     @AppStorage(LocusInterfaceMode.defaultsKey) private var interface = LocusInterfaceMode.pro
+    @AppStorage(LocationBackend.preferDirectKey) private var prefersDirect = true
+    @AppStorage(TimeZoneFollower.defaultsKey) private var timeZoneFollows = true
+    @AppStorage(MapDatumMode.defaultsKey) private var mapDatum = MapDatumMode.automatic
+    @State private var reportsAltitude = DirectSimulationOptions.altitude != nil
+    @State private var altitudeText = DirectSimulationOptions.altitude.map { String(Int($0.rounded())) } ?? "0"
+    @FocusState private var editingAltitude: Bool
+    /// Read once per appearance: it is a plist read and an App Group lookup,
+    /// and the answer only changes when another app is used in between.
+    @State private var legacyBookmarks: [LegacyBookmarks.Bookmark] = []
 
     private var supportsOnDevicePairing: Bool {
         if #available(iOS 27.0, *) { return true }
@@ -38,9 +47,14 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 interfaceSection
-                pairingSection
-                tunnelSection
-                if showTunnelAdvanced { tunnelAdvancedSection }
+                locationSection
+                // The direct engine needs neither. Shown again the moment it is
+                // switched off, since then they are what makes a teleport work.
+                if session.backend.needsTunnel {
+                    pairingSection
+                    tunnelSection
+                    if showTunnelAdvanced { tunnelAdvancedSection }
+                }
                 drivingSection
                 appearanceSection
                 privacySection
@@ -96,11 +110,17 @@ struct SettingsView: View {
             .fullScreenCover(isPresented: $showNameEasterEgg) {
                 LocusEasterEggView()
             }
-            .onAppear { refresh() }
+            .onAppear {
+                refresh()
+                legacyBookmarks = LegacyBookmarks.load()
+            }
             // Swiping a sheet down is how sheets get dismissed; only "Done"
             // used to save the tunnel IP, so the normal gesture threw the edit
             // away without a word.
-            .onDisappear { saveTunnelIP() }
+            .onDisappear {
+                saveTunnelIP()
+                saveAltitude()
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { refresh() }
             }
@@ -141,6 +161,180 @@ struct SettingsView: View {
         } footer: {
             Text("A different app over the same engine: four tabs, saved spots with an emoji each, one speed dial, and nothing about tunnels or pairing. Your places, and this pairing, come with you. Switch back from its You tab.")
         }
+    }
+
+    // MARK: - Location
+
+    /// Which engine sets the location, and the settings that shape what it
+    /// sends.
+    ///
+    /// The engine switch only appears where there is a choice to make: a copy
+    /// installed with TrollStore (or on a jailbreak) carries the
+    /// location-simulation entitlement and can talk to `locationd` itself, the
+    /// way Geranium does. Everywhere else the tunnel is the only engine there
+    /// is, and the footer says what it would take to have the other.
+    private var locationSection: some View {
+        Section {
+            LabeledContent("Engine") {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(session.backend == .direct ? LocusTheme.statusGood : Color.secondary.opacity(0.6))
+                        .frame(width: 8, height: 8)
+                    Text(session.backend.title)
+                }
+            }
+
+            if LocationBackend.directAvailable || InstallProvenance.current.isJailbreak {
+                LabeledContent("Installed", value: InstallProvenance.current.title)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if LocationBackend.directAvailable {
+                Toggle("Set the location directly", isOn: $prefersDirect)
+                    // The location already set belongs to the engine that set
+                    // it; swapping engines underneath would orphan it.
+                    .disabled(session.isSpoofing || session.isRouting || session.joystickActive)
+
+                if session.isSpoofing || session.isRouting {
+                    Text("Stop spoofing to switch engines.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if session.backend == .direct {
+                directCheckRow
+
+                Toggle("Report an altitude", isOn: $reportsAltitude)
+                    .onChange(of: reportsAltitude) { _, _ in saveAltitude() }
+
+                if reportsAltitude {
+                    HStack {
+                        Text("Altitude")
+                        Spacer()
+                        TextField("0", text: $altitudeText)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.trailing)
+                            .focused($editingAltitude)
+                            .onSubmit(saveAltitude)
+                            .frame(maxWidth: 100)
+                        Text("m")
+                            .foregroundStyle(.secondary)
+                    }
+                    .onChange(of: editingAltitude) { _, focused in
+                        if !focused { saveAltitude() }
+                    }
+                }
+            }
+
+            Toggle("Time zone follows the location", isOn: $timeZoneFollows)
+
+            Picker("China map offset", selection: $mapDatum) {
+                ForEach(MapDatumMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .onChange(of: mapDatum) { _, _ in session.reapplyCurrentLocation() }
+
+            Text(mapDatum.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if !legacyBookmarks.isEmpty {
+                Button {
+                    let added = session.importLegacyBookmarks(legacyBookmarks)
+                    session.flash(added == 0
+                        ? "Already in your favourites"
+                        : "Imported \(added) place\(added == 1 ? "" : "s")")
+                    legacyBookmarks = []
+                } label: {
+                    Label(legacyImportTitle, systemImage: "square.and.arrow.down")
+                }
+            }
+        } header: {
+            Text("Location")
+        } footer: {
+            Text(locationFooter)
+        }
+    }
+
+    /// What the last look at CoreLocation said, and a way to look again. The
+    /// direct engine's calls report nothing back, so this is the only proof
+    /// there is that they did anything.
+    @ViewBuilder
+    private var directCheckRow: some View {
+        HStack {
+            Label {
+                Text(session.directCheck.title)
+                    .font(.footnote)
+            } icon: {
+                switch session.directCheck {
+                case .working:
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(LocusTheme.statusGood)
+                case .notTaking:
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(LocusTheme.statusBad)
+                case .checking:
+                    ProgressView().controlSize(.small)
+                case .notRun, .inconclusive:
+                    Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 8)
+            if session.isSpoofing, session.directCheck != .checking {
+                Button("Check") { session.checkDirectSimulation() }
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    private var legacyImportTitle: String {
+        let sources = Set(legacyBookmarks.map(\.source.rawValue)).sorted().joined(separator: " and ")
+        let count = legacyBookmarks.count
+        return "Import \(count) place\(count == 1 ? "" : "s") from \(sources)"
+    }
+
+    private var locationFooter: String {
+        switch session.backend {
+        case .direct:
+            return "Locus is setting the location itself, through locationd — the way Geranium's LocSim does. "
+                + "No pairing file, no tunnel, and the location stays put after Locus is closed, until you press Stop. "
+                + "Apps also see the speed and heading of a route or the joystick, and the altitude above if you set one."
+        case .tunnel:
+            if LocationBackend.directAvailable {
+                return "Direct simulation is switched off, so Locus is using the developer tunnel below."
+            }
+            if InstallProvenance.current.isJailbreak {
+                return "This iPhone is jailbroken, but this copy of Locus wasn't signed with com.apple.locationd.simulation — "
+                    + "a sideloader re-signing it strips the entitlement. Install the Locus .deb from your package manager, "
+                    + "or Locus.tipa with TrollStore or Filza + AppSync, to set the location directly with no pairing and no tunnel."
+            }
+            return "Locus reaches the location service over the developer tunnel below. "
+                + "Installed with TrollStore (the Locus.tipa build) or on a jailbreak, it can set the location directly instead — "
+                + "no pairing file and no tunnel."
+        }
+    }
+
+    private func saveAltitude() {
+        guard reportsAltitude else {
+            if DirectSimulationOptions.altitude != nil {
+                DirectSimulationOptions.altitude = nil
+                session.reapplyCurrentLocation()
+            }
+            return
+        }
+        let parsed = Double(altitudeText.replacingOccurrences(of: ",", with: ".")
+            .trimmingCharacters(in: .whitespaces)) ?? 0
+        let previous = DirectSimulationOptions.altitude
+        DirectSimulationOptions.altitude = parsed
+        // Show what was kept: the stored value is clamped to something a phone
+        // could plausibly be at.
+        if let stored = DirectSimulationOptions.altitude {
+            let text = String(Int(stored.rounded()))
+            if text != altitudeText { altitudeText = text }
+        }
+        if previous != DirectSimulationOptions.altitude { session.reapplyCurrentLocation() }
     }
 
     // MARK: - Pairing
@@ -478,7 +672,9 @@ struct SettingsView: View {
 
     private var privacySection: some View {
         Section("Privacy") {
-            Text("Fully on-device. Favorites, recents and driving parameters stay in UserDefaults. The tunnel is a loopback interface, not a VPN service — it forwards nothing anywhere. No analytics, no accounts, nothing uploaded.")
+            Text(session.backend == .direct
+                 ? "Fully on-device. Favorites, recents and driving parameters stay in UserDefaults. The location is set inside this iPhone and nothing else is involved. No analytics, no accounts, nothing uploaded."
+                 : "Fully on-device. Favorites, recents and driving parameters stay in UserDefaults. The tunnel is a loopback interface, not a VPN service — it forwards nothing anywhere. No analytics, no accounts, nothing uploaded.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -487,8 +683,8 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section("About") {
             LabeledContent("Version", value: appVersion)
-            LabeledContent("Engine", value: "idevice DVT location simulation")
-            Text("Locus is free and open source (MIT). Location injection uses the MIT-licensed idevice FFI.")
+            LabeledContent("Engine", value: session.backend.engineDescription)
+            Text("Locus is free and open source (MIT). Location injection uses the MIT-licensed idevice FFI, or — installed with TrollStore — locationd's own simulation interface, as Geranium's LocSim does.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             // The StosVPN License requires this to be somewhere prominent.

@@ -77,7 +77,9 @@ struct RootView: View {
         .task {
             // One quiet attempt on launch: if the loopback subnet is already up
             // this does nothing at all, so it costs a check, not a VPN prompt.
-            if tunnel.autoConnect {
+            // Not when the direct engine is in use: it needs no tunnel, and
+            // this would be a VPN prompt for nothing.
+            if tunnel.autoConnect, session.backend.needsTunnel {
                 await tunnel.ensureConnected()
             }
         }
@@ -222,7 +224,8 @@ struct StatusBarView: View {
             break
         }
 
-        if loopbackUp { return .ready }
+        // The direct engine is always ready: there is no tunnel to report on.
+        if loopbackUp || !session.backend.needsTunnel { return .ready }
 
         switch tunnel.state {
         case .connecting:

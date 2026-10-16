@@ -169,7 +169,8 @@ struct TeleportIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let session = SpoofSession.shared
 
-        guard PairingStore.shared.hasPairingFile else {
+        // Only the tunnel engine needs a pairing file.
+        guard SpoofSession.shared.canSpoof(pairing: PairingStore.shared) else {
             throw LocusIntentError.notPaired
         }
 
@@ -218,6 +219,9 @@ struct ConnectTunnelIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        if !LocationBackend.current.needsTunnel {
+            return .result(dialog: "Locus sets the location directly on this iPhone — there’s no tunnel to connect.")
+        }
         if TunnelController.loopbackReachable {
             return .result(dialog: "The tunnel is already up.")
         }
@@ -272,7 +276,8 @@ struct DriveSavedRouteIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard PairingStore.shared.hasPairingFile else {
+        // Only the tunnel engine needs a pairing file.
+        guard SpoofSession.shared.canSpoof(pairing: PairingStore.shared) else {
             throw LocusIntentError.notPaired
         }
 

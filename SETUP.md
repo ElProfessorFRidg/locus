@@ -1,5 +1,24 @@
 # Locus — install & first teleport
 
+## 0. TrollStore or jailbroken? Skip almost all of this
+
+If the phone runs **TrollStore** or is **jailbroken**, Locus can set the location the way Geranium's LocSim does — straight through `locationd` — and needs **no pairing file and no tunnel**. Sections 2 and 3 below don't apply.
+
+| Your phone | Install | |
+| --- | --- | --- |
+| TrollStore (iOS 17.0) | `Locus.tipa` | Open it in TrollStore |
+| Rootless jailbreak — Dopamine, palera1n rootless, nathanlr (`/var/jb`) | `Locus-rootless.deb` | Sileo, Zebra or Filza |
+| Rootful jailbreak — palera1n rootful | `Locus-rootful.deb` | Sileo, Zebra or Filza |
+| Jailbroken, with TrollStore or AppSync Unified | `Locus.tipa` also works | TrollStore, or Filza + AppSync |
+
+All of them are on the same [Release](https://github.com/ElProfessorFRidg/locus/releases) as the IPA, built from the same app.
+
+- **Locus needs iOS 17.0 or later**, so a TrollStore phone has to be on exactly 17.0 (TrollStore stops there), and a jailbroken one on 17 or later.
+- **Don't pass the `.tipa` through a sideloader** (AltStore, SideStore, Feather, ESign…). Re-signing strips `com.apple.locationd.simulation`; Locus notices and falls back to the pairing + tunnel route below.
+- The first-run walkthrough is two screens: welcome, then which interface. **Settings → Location** says which engine is in use and how this copy was installed, and after the first teleport, whether iOS is really reporting the simulated location. If it says *Not taking effect*, switch off **Set the location directly** to use the tunnel instead.
+- The location **stays set after Locus is closed**, until you press Stop — as in Geranium. Reopen Locus and it still shows where you are, with the Stop button.
+- Coming from **Geranium** or **Mika's LocSim**? Settings → Location → **Import N places from Geranium / LocSim** copies their bookmarks into your favourites.
+
 ## 1. Sideload the IPA
 
 Install the latest IPA from [Releases](https://github.com/ChrisMack32/Locus/releases) (or build from source) with Feather, SideStore, AltStore, Sideloadly, or LiveContainer.

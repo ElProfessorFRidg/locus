@@ -10,6 +10,9 @@ enum LocationEngineError: LocalizedError {
     case locationSet
     case locationClear
     case notActive
+    /// The direct engine was asked to work in a copy that can't: no
+    /// `com.apple.locationd.simulation` entitlement, or no `CLSimulationManager`.
+    case directUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -21,6 +24,7 @@ enum LocationEngineError: LocalizedError {
         case .locationSet: return "Failed to set simulated coordinates."
         case .locationClear: return "Failed to clear simulated location."
         case .notActive: return "No active simulation session."
+        case .directUnavailable: return "This copy of Locus can’t set the location directly — it wasn’t installed with the location-simulation entitlement (TrollStore or a jailbreak). Turn off direct simulation in Settings to use the developer tunnel instead."
         }
     }
 

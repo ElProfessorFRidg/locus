@@ -138,6 +138,9 @@ final class SpoofSession: ObservableObject {
     @Published private(set) var routeCountdown: Int?
     /// Set when a drive reaches its end, cleared when the summary is dismissed.
     @Published var lastTrip: TripSummary?
+    /// Whether the direct engine has been seen to move the location — see
+    /// `DirectSimulationCheck`. Checked once per launch, on the first teleport.
+    @Published private(set) var directCheck: DirectCheckResult = .notRun
 
     /// Kept so the summary can report wall-clock time, which is not the same as
     /// simulated time whenever the scale isn't 1×.
@@ -157,6 +160,22 @@ final class SpoofSession: ObservableObject {
     private var joystickVector: CGVector = .zero
     private var toastTask: Task<Void, Never>?
     private let locationKeeper = BackgroundKeepAlive()
+    /// The engine the location currently set was set through, so Stop clears
+    /// it with the same one. `nil` when nothing is set.
+    private var activeBackend: LocationBackend?
+    /// Whether the last fix sent carried a speed. The direct engine hands
+    /// `locationd` a whole `CLLocation`, and `locationd` keeps replaying the
+    /// last one — so a joystick let go or a drive stopped mid-route has to say
+    /// "stationary" once, or every app goes on reading 50 km/h from a phone
+    /// that has stopped.
+    private var lastFixWasMoving = false
+    /// Where the time zone was last asked to follow. A drive asks again only
+    /// once it has gone far enough to be somewhere else.
+    private var timeZoneAnchor: CLLocationCoordinate2D?
+    /// The keeper is paused in the background when nothing needs it — see
+    /// `sceneDidEnterBackground`.
+    private var keeperPausedForBackground = false
+    private let directChecker = DirectSimulationCheck()
 
     /// Kept rather than built per fix: a generator is an object with a Taptic
     /// Engine connection behind it, and making one for every buzz is both an
@@ -207,6 +226,17 @@ final class SpoofSession: ObservableObject {
             nested
                 .sink { [weak self] in self?.objectWillChange.send() }
                 .store(in: &cancellables)
+        }
+
+        // The direct engine's simulation outlives the app. Opening on "Not
+        // Spoofing" over a phone that is still somewhere else would leave no
+        // Stop button to end it.
+        if LocationBackend.current == .direct, let record = DirectSimulationRecord.load() {
+            simulated = record.coordinate
+            pin = record.coordinate
+            status = .active
+            activeBackend = .direct
+            timeZoneAnchor = record.coordinate
         }
     }
 
@@ -270,13 +300,28 @@ final class SpoofSession: ObservableObject {
 
     var isRouting: Bool { routeTask != nil }
 
+    /// The engine a teleport would use right now.
+    var backend: LocationBackend { LocationBackend.current }
+
+    /// Whether everything a teleport needs is in place, short of the tunnel —
+    /// which `prepareTunnel` raises on demand. For callers that report rather
+    /// than act, like the Siri intents.
+    func canSpoof(pairing: PairingStore) -> Bool {
+        !backend.needsPairing || pairing.hasPairingFile
+    }
+
+    /// The pairing file only matters to the tunnel engine. A TrollStore copy
+    /// using the direct one has never needed it and never will.
+    private func isReady(_ pairing: PairingStore) -> Bool {
+        guard !canSpoof(pairing: pairing) else { return true }
+        lastError = "Import an RPPairing file in Settings first."
+        return false
+    }
+
     // MARK: - Teleport
 
     func teleport(to coordinate: CLLocationCoordinate2D, pairing: PairingStore) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
-            return
-        }
+        guard isReady(pairing) else { return }
         setPin(coordinate)
         Task { [weak self] in
             guard let self else { return }
@@ -298,20 +343,37 @@ final class SpoofSession: ObservableObject {
     /// The same, awaited. For callers that report an outcome — the Siri intent
     /// shouldn't say "back to your real location" before it is.
     func stopAndWait(pairing: PairingStore) async {
-        cancelRoute()
-        stopJoystick()
+        // No settling here: a "stationary" fix sent on the way out could land
+        // after the clear and put the location straight back.
+        cancelRoute(settle: false)
+        stopJoystick(settle: false)
         stopResend()
         stopHealth()
         isBusy = true
-        finishStop(await LocationEngine.clear())
+        // Cleared through whichever engine set it — the Settings switch is
+        // locked while spoofing, but a location restored from a previous launch
+        // was set by the direct engine whatever the switch says now.
+        let engine = activeBackend ?? backend
+        let result: Result<Void, LocationEngineError>
+        switch engine {
+        case .direct: result = await DirectLocationEngine.clear()
+        case .tunnel: result = await LocationEngine.clear()
+        }
+        finishStop(result, engine: engine)
     }
 
-    private func finishStop(_ result: Result<Void, LocationEngineError>) {
+    private func finishStop(_ result: Result<Void, LocationEngineError>, engine: LocationBackend) {
         isBusy = false
         switch result {
         case .success:
             simulated = nil
             status = .idle
+            activeBackend = nil
+            lastFixWasMoving = false
+            if engine == .direct { DirectSimulationRecord.clear() }
+            // Back to the real place, so back to its time zone.
+            timeZoneAnchor = nil
+            TimeZoneFollower.requestUpdate()
             endBackground()
             // Keep location updates running so the map puck / locate button
             // can return to the real GPS fix (not the leftover pin).
@@ -324,8 +386,89 @@ final class SpoofSession: ObservableObject {
     }
 
     /// Best-known real device coordinate (not the teleport pin).
+    ///
+    /// CoreLocation reports WGS-84; the map is GCJ-02 in mainland China, so the
+    /// fix is moved into map space before anything draws or starts from it.
     var realCoordinate: CLLocationCoordinate2D? {
-        locationKeeper.lastKnownCoordinate
+        locationKeeper.lastKnownCoordinate.map { MapDatumMode.current.fromWGS84($0) }
+    }
+
+    /// Sends the location being simulated again, through the same path a
+    /// teleport takes. For settings that change what a fix *says* — altitude,
+    /// the China map offset — so they take effect now rather than on the next
+    /// teleport. Left alone while something is moving: the next fix is a
+    /// fraction of a second away anyway.
+    func reapplyCurrentLocation() {
+        guard isSpoofing, !isRouting, !joystickActive, let here = simulated else { return }
+        Task { [weak self] in
+            await self?.apply(here, pairing: PairingStore.shared, markRecent: false)
+        }
+    }
+
+    /// Adds bookmarks from Geranium or Mika's LocSim to favourites, skipping
+    /// any spot already starred. Returns how many were new.
+    @discardableResult
+    func importLegacyBookmarks(_ bookmarks: [LegacyBookmarks.Bookmark]) -> Int {
+        var added = 0
+        // Reversed because each new favourite goes on top: this way the list
+        // ends up in the order the other app kept it.
+        for bookmark in bookmarks.reversed() {
+            // Both apps stored what they handed `locationd`: WGS-84. Favourites
+            // are kept in map space, like everything else the map touches.
+            let wgs = CLLocationCoordinate2D(latitude: bookmark.latitude, longitude: bookmark.longitude)
+            let coordinate = MapDatumMode.current.fromWGS84(wgs)
+            guard !isFavorite(coordinate) else { continue }
+            _ = addFavorite(name: bookmark.name, coordinate: coordinate)
+            added += 1
+        }
+        return added
+    }
+
+    /// Asks CoreLocation whether the direct engine's location took.
+    ///
+    /// The entitlement can be present and `locationd` still not listen, and
+    /// nothing in `CLSimulationManager`'s API would say so. Rather than leave
+    /// that to be discovered in Maps, a "not taking" verdict says it here and
+    /// points at the tunnel, which works regardless of how Locus was installed.
+    func checkDirectSimulation() {
+        guard activeBackend == .direct, let here = simulated else {
+            directCheck = .notRun
+            return
+        }
+        directCheck = .checking
+        let wire = MapDatumMode.current.toWGS84(here)
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.directChecker.verify(wire)
+            // Stopped, or moved on to the tunnel, while the check ran.
+            guard self.activeBackend == .direct || result == .working else {
+                self.directCheck = .notRun
+                return
+            }
+            self.directCheck = result
+            if result == .notTaking, !self.isRouting, !self.joystickActive {
+                self.lastError = "iOS is still reporting your real location. This copy of Locus holds the location-simulation entitlement, "
+                    + "but locationd isn’t accepting it here. Settings → Location → turn off “Set the location directly” to use the developer tunnel instead."
+            }
+        }
+    }
+
+    // MARK: - App lifecycle
+
+    /// The keeper's background location updates are what keep a tunnel session
+    /// alive behind the lock screen. The direct engine's simulation needs no
+    /// keeping alive, so when nothing is moving there is no reason to keep the
+    /// GPS and the app running in the background for it.
+    func sceneDidEnterBackground() {
+        guard backend.persistsOnItsOwn, !isRouting, !joystickActive else { return }
+        locationKeeper.stop()
+        keeperPausedForBackground = true
+    }
+
+    func sceneWillEnterForeground() {
+        guard keeperPausedForBackground else { return }
+        keeperPausedForBackground = false
+        locationKeeper.start()
     }
 
     /// Start lightweight GPS updates for the map puck / locate button.
@@ -344,6 +487,11 @@ final class SpoofSession: ObservableObject {
     /// the wrong thing.
     @discardableResult
     private func prepareTunnel() async -> Bool {
+        // The direct engine talks to `locationd` from this process. There is
+        // no tunnel to raise, and raising one anyway would be a VPN prompt for
+        // nothing.
+        guard backend.needsTunnel else { return true }
+
         let controller = TunnelController.shared
 
         if controller.autoConnect {
@@ -368,16 +516,13 @@ final class SpoofSession: ObservableObject {
     // MARK: - Joystick
 
     func startJoystick(pairing: PairingStore) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
-            return
-        }
-        let start = simulated ?? pin ?? locationKeeper.lastKnownCoordinate
+        guard isReady(pairing) else { return }
+        let start = simulated ?? pin ?? realCoordinate
         guard let start else {
             lastError = "Drop a pin or teleport somewhere before using the joystick."
             return
         }
-        cancelRoute()
+        cancelRoute(settle: false)
         Task { [weak self] in
             guard let self else { return }
             guard await self.prepareTunnel() else { return }
@@ -400,13 +545,29 @@ final class SpoofSession: ObservableObject {
         joystickVector = vector
     }
 
-    func stopJoystick() {
+    /// - Parameter settle: report the location as stationary once the stick is
+    ///   gone. Off when something else is about to send a fix of its own.
+    func stopJoystick(settle: Bool = true) {
         joystickActive = false
         joystickVector = .zero
         joystick = nil
         joystickTimer?.invalidate()
         joystickTimer = nil
         refreshIdleTimer()
+        if settle { settleMotion() }
+    }
+
+    /// Sends the current spot again with no speed, if the last fix had one.
+    ///
+    /// Only the direct engine carries speed and heading at all; the developer
+    /// service takes coordinates and nothing else, so there is nothing to undo.
+    private func settleMotion() {
+        guard lastFixWasMoving, activeBackend == .direct, let here = simulated else { return }
+        lastFixWasMoving = false
+        Task { [weak self] in
+            guard let self, self.simulated != nil, !self.isRouting, !self.joystickActive else { return }
+            await self.apply(here, pairing: PairingStore.shared, markRecent: false, motion: .stationary)
+        }
     }
 
     /// Top speed the joystick moves at. A fixed speed set for routes is an
@@ -432,6 +593,10 @@ final class SpoofSession: ObservableObject {
         guard magnitude > 0.08 else {
             joystick?.speed = 0
             joystick?.course = nil
+            // Released: one stationary fix, so apps stop reading the last speed.
+            if lastFixWasMoving {
+                await apply(current, pairing: pairing, markRecent: false, motion: .stationary)
+            }
             return
         }
 
@@ -446,11 +611,12 @@ final class SpoofSession: ObservableObject {
         let meters = speed * dt
         let next = Geo.offset(current, east: nx * meters, north: ny * meters)
 
+        let course = Geo.bearing(from: current, to: next)
         joystick?.speed = speed
-        joystick?.course = Geo.bearing(from: current, to: next)
+        joystick?.course = course
         joystick?.distance += meters
 
-        await apply(next, pairing: pairing, markRecent: false)
+        await apply(next, pairing: pairing, markRecent: false, motion: Motion(speed: speed, course: course))
     }
 
     // MARK: - Routes
@@ -474,17 +640,14 @@ final class SpoofSession: ObservableObject {
         startingAt startDistance: CLLocationDistance = 0,
         roads: [RoadSegment] = []
     ) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
-            return
-        }
+        guard isReady(pairing) else { return }
         guard coordinates.count >= 2 else {
             lastError = "Build or draw a route first."
             return
         }
 
-        cancelRoute()
-        stopJoystick()
+        cancelRoute(settle: false)
+        stopJoystick(settle: false)
         // The pin is about to move every second; an address for where it
         // started would only go stale and mislead.
         places.clear()
@@ -587,6 +750,7 @@ final class SpoofSession: ObservableObject {
         // A route that reached its end has nothing left to resume.
         routeStore.clearResume()
         refreshIdleTimer()
+        settleMotion()
     }
 
     func pauseRoute() { isRoutePaused = true }
@@ -608,7 +772,9 @@ final class SpoofSession: ObservableObject {
     /// - Parameter keepResumePoint: a deliberate stop discards where it got to;
     ///   starting a different route also does. The progress file is only there
     ///   for the drive nobody chose to end.
-    func cancelRoute(keepResumePoint: Bool = false) {
+    /// - Parameter settle: report the location as stationary where the drive
+    ///   stopped. Off when something else is about to send a fix of its own.
+    func cancelRoute(keepResumePoint: Bool = false, settle: Bool = true) {
         routeGeneration += 1
         routeTask?.cancel()
         routeTask = nil
@@ -619,6 +785,7 @@ final class SpoofSession: ObservableObject {
         LiveActivityController.shared.end()
         if !keepResumePoint { routeStore.clearResume() }
         refreshIdleTimer()
+        if settle { settleMotion() }
     }
 
     /// Picks an interrupted drive back up from where the progress file says it
@@ -688,7 +855,16 @@ final class SpoofSession: ObservableObject {
                 // can't change under a walker mid-route, so it stays snapshotted.
                 let scale = activeProfile.timeScaleClamped
 
-                await apply(fix.coordinate, pairing: pairing, markRecent: false)
+                // Speed as the phone experiences it: at 4× playback the fixes
+                // cover ground four times as fast, and a reported speed that
+                // disagreed with the distance between them would be the
+                // inconsistency an app notices.
+                await apply(
+                    fix.coordinate,
+                    pairing: pairing,
+                    markRecent: false,
+                    motion: fix.isStopped ? .stationary : Motion(speed: fix.speed * scale, course: fix.course)
+                )
                 telemetry = DriveTelemetry(
                     speed: fix.speed,
                     speedLimit: fix.speedLimit,
@@ -938,6 +1114,44 @@ final class SpoofSession: ObservableObject {
 
     // MARK: - Engine
 
+    /// How the simulated phone is moving, for the engine that can say so.
+    struct Motion {
+        var speed: CLLocationSpeed
+        var course: CLLocationDirection?
+
+        static let stationary = Motion(speed: 0, course: nil)
+    }
+
+    /// One fix through whichever engine is in use.
+    ///
+    /// `coordinate` is in map space; this is the one place it leaves the app,
+    /// so this is where a GCJ-02 map coordinate becomes the WGS-84 the
+    /// location system expects.
+    private func send(
+        _ coordinate: CLLocationCoordinate2D,
+        through engine: LocationBackend,
+        motion: Motion?,
+        pairing: PairingStore
+    ) async -> Result<Void, LocationEngineError> {
+        let wire = MapDatumMode.current.toWGS84(coordinate)
+        switch engine {
+        case .direct:
+            return await DirectLocationEngine.set(DirectLocationEngine.Fix(
+                coordinate: wire,
+                altitude: DirectSimulationOptions.altitude,
+                speed: motion?.speed,
+                course: motion?.course
+            ))
+        case .tunnel:
+            return await LocationEngine.set(
+                latitude: wire.latitude,
+                longitude: wire.longitude,
+                pairingPath: pairing.pairingPath,
+                deviceIP: TunnelConfig.targetIP
+            )
+        }
+    }
+
     /// Sends one fix and folds the outcome back into the session's state.
     ///
     /// The suspension is the whole point: the engine call is a round trip over
@@ -952,18 +1166,15 @@ final class SpoofSession: ObservableObject {
         _ coordinate: CLLocationCoordinate2D,
         pairing: PairingStore,
         markRecent: Bool,
-        interactive: Bool = false
+        interactive: Bool = false,
+        motion: Motion? = nil
     ) async {
         if status == .idle || status.isDropped {
             status = .connecting
         }
+        let engine = backend
         if interactive { isBusy = true }
-        let result = await LocationEngine.set(
-            latitude: coordinate.latitude,
-            longitude: coordinate.longitude,
-            pairingPath: pairing.pairingPath,
-            deviceIP: TunnelConfig.targetIP
-        )
+        let result = await send(coordinate, through: engine, motion: motion, pairing: pairing)
         if interactive { isBusy = false }
         switch result {
         case .success:
@@ -971,10 +1182,24 @@ final class SpoofSession: ObservableObject {
             pin = coordinate
             status = .active
             lastError = nil
-            beginBackground()
+            activeBackend = engine
+            lastFixWasMoving = engine == .direct && (motion?.speed ?? 0) > 0.05
             locationKeeper.start()
-            startResend(pairing: pairing)
-            startHealth(pairing: pairing)
+            followTimeZone(to: coordinate, force: markRecent)
+            switch engine {
+            case .direct:
+                // Nothing to keep alive and nothing that can drop: the
+                // simulation is `locationd`'s now. Remembered so the next
+                // launch knows it is still running.
+                DirectSimulationRecord.save(coordinate)
+                if interactive, directCheck == .notRun {
+                    checkDirectSimulation()
+                }
+            case .tunnel:
+                beginBackground()
+                startResend(pairing: pairing)
+                startHealth(pairing: pairing)
+            }
             // Ask now, while it is working, rather than at the moment it breaks.
             requestDropAlertsIfNeeded()
             if markRecent {
@@ -1009,14 +1234,19 @@ final class SpoofSession: ObservableObject {
                 // A route re-sends far more often than this on its own; resending
                 // underneath it would fight the walker for the current fix.
                 guard !self.isRouting else { return }
-                _ = await LocationEngine.set(
-                    latitude: sim.latitude,
-                    longitude: sim.longitude,
-                    pairingPath: pairing.pairingPath,
-                    deviceIP: TunnelConfig.targetIP
-                )
+                _ = await self.send(sim, through: .tunnel, motion: nil, pairing: pairing)
             }
         }
+    }
+
+    /// Asks iOS to move the clock to wherever the location now is — on every
+    /// deliberate teleport, and during a drive only once it has crossed enough
+    /// ground to plausibly be in another zone. Asking four times a second for
+    /// an hour would be asking `timed` to do nothing else.
+    private func followTimeZone(to coordinate: CLLocationCoordinate2D, force: Bool) {
+        if !force, let anchor = timeZoneAnchor, Geo.distance(anchor, coordinate) < 25_000 { return }
+        timeZoneAnchor = coordinate
+        TimeZoneFollower.requestUpdate()
     }
 
     private func stopResend() {
@@ -1029,6 +1259,8 @@ final class SpoofSession: ObservableObject {
         healthTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let sim = self.simulated else { return }
+                // Only the tunnel engine's session can die under it.
+                guard self.activeBackend == .tunnel else { return }
                 if case .dropped = self.status {
                     self.status = .reconnecting
                     await self.apply(sim, pairing: pairing, markRecent: false)

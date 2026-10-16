@@ -54,6 +54,9 @@ final class FunConnection: ObservableObject {
     }
 
     private func read() -> FunConnectionState {
+        // Installed with TrollStore (or on a jailbreak): Locus sets the
+        // location itself and there is nothing to switch on.
+        if !LocationBackend.current.needsTunnel { return .ready }
         if TunnelController.loopbackReachable { return .ready }
         if isWorking { return .starting }
 
