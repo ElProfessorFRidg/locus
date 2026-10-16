@@ -169,9 +169,9 @@ struct TeleportIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let session = SpoofSession.shared
 
-        // Only the tunnel engine needs a pairing file.
-        guard SpoofSession.shared.canSpoof(pairing: PairingStore.shared) else {
-            throw LocusIntentError.notPaired
+        // The direct engine needs nothing; the others say what they're missing.
+        if let problem = SpoofSession.shared.readinessProblem(pairing: PairingStore.shared) {
+            throw LocusIntentError.failed(problem)
         }
 
         // A stale error from an earlier failure would otherwise be read as
@@ -276,9 +276,9 @@ struct DriveSavedRouteIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        // Only the tunnel engine needs a pairing file.
-        guard SpoofSession.shared.canSpoof(pairing: PairingStore.shared) else {
-            throw LocusIntentError.notPaired
+        // The direct engine needs nothing; the others say what they're missing.
+        if let problem = SpoofSession.shared.readinessProblem(pairing: PairingStore.shared) {
+            throw LocusIntentError.failed(problem)
         }
 
         let session = SpoofSession.shared

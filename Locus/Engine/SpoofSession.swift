@@ -303,18 +303,23 @@ final class SpoofSession: ObservableObject {
     /// The engine a teleport would use right now.
     var backend: LocationBackend { LocationBackend.current }
 
-    /// Whether everything a teleport needs is in place, short of the tunnel —
-    /// which `prepareTunnel` raises on demand. For callers that report rather
-    /// than act, like the Siri intents.
-    func canSpoof(pairing: PairingStore) -> Bool {
-        !backend.needsPairing || pairing.hasPairingFile
+    /// Why a teleport can't happen right now, or `nil` if it can — short of
+    /// the tunnel, which `prepareTunnel` raises on demand. The direct engine
+    /// needs nothing at all; otherwise the method chosen in Settings decides
+    /// (a pairing file, the trusted certificate, or both).
+    func readinessProblem(pairing: PairingStore) -> String? {
+        guard backend == .tunnel else { return nil }
+        return SpoofBackend.current.readinessProblem(pairing: pairing)
     }
 
-    /// The pairing file only matters to the tunnel engine. A TrollStore copy
-    /// using the direct one has never needed it and never will.
+    /// For callers that report rather than act, like the Siri intents.
+    func canSpoof(pairing: PairingStore) -> Bool {
+        readinessProblem(pairing: pairing) == nil
+    }
+
     private func isReady(_ pairing: PairingStore) -> Bool {
-        guard !canSpoof(pairing: pairing) else { return true }
-        lastError = "Import an RPPairing file in Settings first."
+        guard let problem = readinessProblem(pairing: pairing) else { return true }
+        lastError = problem
         return false
     }
 
@@ -356,8 +361,19 @@ final class SpoofSession: ObservableObject {
         let engine = activeBackend ?? backend
         let result: Result<Void, LocationEngineError>
         switch engine {
-        case .direct: result = await DirectLocationEngine.clear()
-        case .tunnel: result = await LocationEngine.clear()
+        case .direct:
+            result = await DirectLocationEngine.clear()
+        case .tunnel:
+            // Clearing the developer service needs the tunnel, and reconnects
+            // over it if the old session is gone — so bring it back first if
+            // it dropped.
+            if SpoofBackend.current.usesDeveloper {
+                await prepareTunnel()
+            }
+            result = await LocationEngine.clear(
+                pairingPath: pairing.hasPairingFile ? pairing.pairingPath : nil,
+                deviceIP: TunnelConfig.targetIP
+            )
         }
         finishStop(result, engine: engine)
     }
@@ -366,6 +382,7 @@ final class SpoofSession: ObservableObject {
         isBusy = false
         switch result {
         case .success:
+            let wasNetwork = engine == .tunnel && SpoofBackend.current.usesNetwork && simulated != nil
             simulated = nil
             status = .idle
             activeBackend = nil
@@ -375,6 +392,10 @@ final class SpoofSession: ObservableObject {
             timeZoneAnchor = nil
             TimeZoneFollower.requestUpdate()
             endBackground()
+            if wasNetwork {
+                // iOS keeps the positions it was given until it next asks.
+                flash("Stopped — turn Location Services off and on to get your real location back")
+            }
             // Keep location updates running so the map puck / locate button
             // can return to the real GPS fix (not the leftover pin).
             locationKeeper.start()
@@ -383,6 +404,22 @@ final class SpoofSession: ObservableObject {
             status = .dropped(error.localizedDescription)
             postDropNotification(error.localizedDescription)
         }
+    }
+
+    /// Network mode keeps going without the app: the extension holds the
+    /// coordinate. On launch, pick that spoof back up instead of showing "not
+    /// spoofing" over one that is still in force.
+    func adoptNetworkSpoofIfRunning(pairing: PairingStore) async {
+        // A direct-engine spoof restored at launch is already showing.
+        guard backend == .tunnel, SpoofBackend.current.usesNetwork, status == .idle, simulated == nil,
+              let running = await NetworkSpoofer.shared.adoptRunning() else { return }
+        let coordinate = CLLocationCoordinate2D(latitude: running.latitude, longitude: running.longitude)
+        simulated = coordinate
+        setPin(coordinate)
+        status = .active
+        beginBackground()
+        startResend(pairing: pairing)
+        startHealth(pairing: pairing)
     }
 
     /// Best-known real device coordinate (not the teleport pin).
@@ -493,6 +530,11 @@ final class SpoofSession: ObservableObject {
         guard backend.needsTunnel else { return true }
 
         let controller = TunnelController.shared
+
+        // Network mode brings its own tunnel up inside `NetworkSpoofer.set`, and
+        // only Locus' own will do — pointing someone at LocalDevVPN here would
+        // be pointing them at something that can't help.
+        if SpoofBackend.current == .network { return true }
 
         if controller.autoConnect {
             if await controller.ensureConnected() { return true }
@@ -1208,7 +1250,17 @@ final class SpoofSession: ObservableObject {
                 // walker both come through here, and buzzing once a second for
                 // an hour is not confirmation, it's a fault.
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                flash("Now at \(suggestedFavoriteName(for: coordinate))")
+                if engine == .tunnel, SpoofBackend.current == .network {
+                    // Nothing has moved yet: the reply is only rewritten when iOS
+                    // next asks Apple, and saying "now at" before that is a lie.
+                    // GPS wins over network positioning within seconds; with a
+                    // pairing file, Both is what keeps the place from slipping.
+                    flash(pairing.hasPairingFile
+                          ? "Set to \(suggestedFavoriteName(for: coordinate)) — GPS can pull it back; Both holds it"
+                          : "Set to \(suggestedFavoriteName(for: coordinate)) — asking iOS to look again")
+                } else {
+                    flash("Now at \(suggestedFavoriteName(for: coordinate))")
+                }
             }
         case .failure(let error):
             lastError = error.localizedDescription

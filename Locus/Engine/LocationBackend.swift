@@ -4,8 +4,10 @@ import Foundation
 
 /// Which of the two engines sets the location.
 ///
-/// - `tunnel`: idevice over the loopback tunnel to Apple's developer service.
-///   Works on any sideloaded copy, needs a pairing file and a tunnel.
+/// - `tunnel`: everything that goes through Locus' loopback tunnel — the
+///   method picked in Settings (`SpoofBackend`): Apple's developer service with
+///   a pairing file, network mode's positioning rewrite, or both. Works on any
+///   sideloaded copy.
 /// - `direct`: `CLSimulationManager` from this process, as Geranium does. Needs
 ///   nothing at all, but only exists where the copy was installed with the
 ///   `com.apple.locationd.simulation` entitlement — TrollStore, or a jailbreak.
@@ -32,7 +34,7 @@ enum LocationBackend: String, Equatable {
     }
 
     /// Whether a teleport needs an RPPairing file before it can work.
-    var needsPairing: Bool { self == .tunnel }
+    var needsPairing: Bool { self == .tunnel && SpoofBackend.current.usesDeveloper }
 
     /// Whether a teleport needs the loopback tunnel up before it can work.
     var needsTunnel: Bool { self == .tunnel }
@@ -45,7 +47,7 @@ enum LocationBackend: String, Equatable {
     var title: String {
         switch self {
         case .direct: return "Direct (locationd)"
-        case .tunnel: return "Developer tunnel"
+        case .tunnel: return SpoofBackend.current.title
         }
     }
 
@@ -53,7 +55,12 @@ enum LocationBackend: String, Equatable {
     var engineDescription: String {
         switch self {
         case .direct: return "CLSimulationManager, in-process"
-        case .tunnel: return "idevice DVT location simulation"
+        case .tunnel:
+            switch SpoofBackend.current {
+            case .developer: return "idevice DVT location simulation"
+            case .network: return "Network mode (positioning rewrite)"
+            case .both: return "idevice DVT + network mode"
+            }
         }
     }
 }
