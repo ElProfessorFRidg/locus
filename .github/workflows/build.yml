@@ -211,7 +211,7 @@ jobs:
           # fall back to asking for a pairing file — exactly what it exists to
           # avoid. So it is checked, not assumed.
           ldid -e "$APP/Locus" > tipa/entitlements.plist
-          /usr/libexec/PlistBuddy -c "Print :com.apple.locationd.simulation" tipa/entitlements.plist | grep -qx true \
+          [[ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.locationd.simulation" tipa/entitlements.plist)" == "true" ]] \
             || { echo "::error::Locus.tipa is missing com.apple.locationd.simulation"; exit 1; }
           echo "Signed with:"; cat tipa/entitlements.plist
 
@@ -219,8 +219,12 @@ jobs:
           # extension is refused at install time on a jailbreak, and silently
           # left out on TrollStore.
           for BIN in "$APP/Locus" "$APP/PlugIns/LocusTunnel.appex/LocusTunnel" "$APP/PlugIns/LocusWidgets.appex/LocusWidgets"; do
-            codesign -dv "$BIN" 2>&1 | grep -q "Signature=adhoc" \
-              || { echo "::error::$BIN is not signed"; exit 1; }
+            # Captured first: piped straight into `grep -q` under pipefail,
+            # an early grep exit fails the pipeline on a signed binary.
+            INFO=$(codesign -dv "$BIN" 2>&1 || true)
+            grep -q "^CodeDirectory " <<< "$INFO" \
+              || { echo "$INFO"; echo "::error::$BIN is not signed"; exit 1; }
+            echo "$BIN: $(grep '^CodeDirectory ' <<< "$INFO")"
           done
 
           # TrollStore reaches iOS 17.0 at the very most. A build that asks for
@@ -280,9 +284,13 @@ jobs:
             dpkg-deb -Zxz --root-owner-group -b "$ROOT" "Locus-$FLAVOUR.deb"
 
             # Check what was built, not what was meant to be.
-            dpkg-deb -f "Locus-$FLAVOUR.deb" Architecture | grep -qx "$ARCH" \
-              || { echo "::error::Locus-$FLAVOUR.deb has the wrong architecture"; exit 1; }
-            dpkg-deb -c "Locus-$FLAVOUR.deb" | grep -q "\./$APPS/Locus.app/Locus$" \
+            # Captured rather than piped into `grep -q`, which under pipefail
+            # fails the step whenever grep stops reading early.
+            BUILT_ARCH=$(dpkg-deb -f "Locus-$FLAVOUR.deb" Architecture)
+            [[ "$BUILT_ARCH" == "$ARCH" ]] \
+              || { echo "::error::Locus-$FLAVOUR.deb is $BUILT_ARCH, expected $ARCH"; exit 1; }
+            LISTING=$(dpkg-deb -c "Locus-$FLAVOUR.deb")
+            grep -q "\./$APPS/Locus.app/Locus$" <<< "$LISTING" \
               || { echo "::error::Locus-$FLAVOUR.deb doesn't put Locus.app in /$APPS"; exit 1; }
             echo "Locus-$FLAVOUR.deb:"; dpkg-deb -I "Locus-$FLAVOUR.deb"
           done
