@@ -11,6 +11,12 @@ struct SettingsView: View {
 
     @State private var showImporter = false
     @State private var showPairOnDevice = false
+    @State private var showNetworkMode = false
+    @State private var showBothGuide = false
+    @State private var showReadout = false
+    @AppStorage(ProMode.defaultsKey) private var proMode = false
+    @State private var backend = SpoofBackend.current
+    @StateObject private var intercept = InterceptIdentity.shared
     @State private var showNameEasterEgg = false
     @State private var showDriveSettings = false
     @State private var showTunnelAdvanced = false
@@ -38,9 +44,11 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 interfaceSection
+                methodSection
                 pairingSection
                 tunnelSection
                 if showTunnelAdvanced { tunnelAdvancedSection }
+                proSection
                 drivingSection
                 appearanceSection
                 privacySection
@@ -70,6 +78,15 @@ struct SettingsView: View {
                 )
                 .ignoresSafeArea()
             }
+            .sheet(isPresented: $showNetworkMode) {
+                NetworkModeView()
+            }
+            .sheet(isPresented: $showBothGuide) {
+                BothGuideView()
+            }
+            .sheet(isPresented: $showReadout) {
+                ProReadoutView()
+            }
             .sheet(isPresented: $showPairOnDevice) {
                 PairOnDeviceView()
                     .environmentObject(pairing)
@@ -96,13 +113,94 @@ struct SettingsView: View {
             .fullScreenCover(isPresented: $showNameEasterEgg) {
                 LocusEasterEggView()
             }
-            .onAppear { refresh() }
+            .onAppear {
+                refresh()
+                intercept.refreshTrust()
+            }
             // Swiping a sheet down is how sheets get dismissed; only "Done"
             // used to save the tunnel IP, so the normal gesture threw the edit
             // away without a word.
             .onDisappear { saveTunnelIP() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { refresh() }
+            }
+        }
+    }
+
+    // MARK: - Pro
+
+    private var proSection: some View {
+        Section {
+            Toggle("Pro mode", isOn: $proMode)
+
+            Button {
+                showReadout = true
+            } label: {
+                Label("What apps see", systemImage: "scope")
+            }
+        } header: {
+            Text("Pro")
+        } footer: {
+            Text("Reads the fix back from Core Location the way any other app would — including whether iOS marks it as simulated — and, with Pro mode on, keeps a one-line readout on the map.")
+        }
+    }
+
+    // MARK: - Method
+
+    private var methodSection: some View {
+        Section {
+            Picker("Method", selection: $backend) {
+                ForEach(SpoofBackend.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(session.isSpoofing || session.isRouting)
+            .onChange(of: backend) { _, value in SpoofBackend.current = value }
+
+            Text(backend.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if backend.usesNetwork {
+                Button {
+                    showNetworkMode = true
+                } label: {
+                    HStack {
+                        Label("Set up network mode", systemImage: "network.badge.shield.half.filled")
+                        Spacer()
+                        Image(systemName: intercept.trust == .trusted
+                              ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(intercept.trust == .trusted
+                                             ? LocusTheme.statusGood : LocusTheme.statusWarn)
+                    }
+                }
+            }
+
+            // Network mode only steers Wi-Fi and cell positioning; GPS and iOS'
+            // own cache pull the phone back within seconds. With a pairing file
+            // there is a method that holds, so say so where the choice is made.
+            if backend == .network, pairing.hasPairingFile {
+                Button {
+                    backend = .both
+                } label: {
+                    Label("For a position that holds, use Both", systemImage: "arrow.triangle.merge")
+                }
+                .disabled(session.isSpoofing || session.isRouting)
+            }
+
+            if backend.usesNetwork {
+                Button {
+                    showBothGuide = true
+                } label: {
+                    Label("How to make it hold", systemImage: "list.number")
+                }
+            }
+        } header: {
+            Text("Spoofing method")
+        } footer: {
+            if session.isSpoofing || session.isRouting {
+                Text("Stop spoofing to switch method.")
             }
         }
     }
@@ -283,7 +381,10 @@ struct SettingsView: View {
             // Works whoever raised the tunnel: it is the same handshake the
             // location engine is about to make, so a pass here means a teleport
             // will get through and a fail means it won't.
-            if loopbackUp || builtInTunnelUsable {
+            // The probe knocks on the developer service, which network mode
+            // doesn't use and which may not be listening at all without
+            // Developer Mode — a "nothing answered" there would be a false alarm.
+            if (loopbackUp || builtInTunnelUsable), backend == .developer {
                 Button {
                     Task { await tunnel.runProbe() }
                 } label: {

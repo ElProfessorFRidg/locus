@@ -119,6 +119,11 @@ targets:
       - path: Locus/Support/RoadClass.swift
       - path: Locus/Support/RouteShape.swift
       - path: Locus/Support/SavedPlace.swift
+      - path: Locus/Support/X509Builder.swift
+      - path: LocusTunnel/Shared/WLocRewriter.swift
+      - path: LocusTunnel/Shared/InterceptDNS.swift
+      - path: LocusTunnel/Shared/InterceptConfig.swift
+      - path: LocusTunnel/Shared/HTTPHead.swift
       - path: Locus/Engine/TravelMode.swift
       - path: Locus/Engine/FunPlan.swift
       - path: Locus/Support/InterfaceMode.swift

@@ -13,6 +13,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 
 - One-tap teleport (map pin or place search)
 - **Built-in tunnel** — Locus raises the loopback tunnel itself, no second app to launch
+- **Network mode** — no pairing file, no Developer Mode, no proxy app: Locus rewrites Apple's Wi‑Fi/cell positioning replies itself, inside its own tunnel
 - Live joystick — walk / run / cycle / drive with light speed variation
 - **Routes built by dragging them** — lettered markers on the map, stops along the way, tap an alternative to take it
 - Walk/Drive routing on real roads & footpaths (MapKit), alternatives badged **Fastest** / **Shortest** and compared by "+4 min, −1.2 km"
@@ -31,6 +32,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - Background keep-alive + live status bar + drop alerts
 - Paste a coordinate or a Maps link into search; long-press the status bar to copy, link or share where you are
 - Precision placement — pan under a crosshair, then nudge the pin 1 / 5 / 25 m at a time
+- **Pro mode** — a live "what apps see" readout: the fix Core Location really delivers, whether iOS flags it as simulated, accuracy, and how far it is from what Locus asked for
 - Favorites & recents
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25
@@ -144,6 +146,28 @@ Locus uses the MIT-licensed [idevice](https://github.com/jkcoxson/idevice) FFI t
 **iOS 27:** Settings → **Pair on this iPhone** advertises `_remotepairing-pairable-host._tcp`. Confirm the 6-digit code under Settings › Privacy & Security › Developer Mode › Pair with Host — no computer.
 
 **iOS 18–26:** import an **RPPairing** file once from [idevice_pair](https://github.com/jkcoxson/idevice_pair/releases).
+
+### Network mode
+
+The developer method above is the better one when you can pair. Network mode is for when you can't, or don't want to: **no RPPairing file, no Developer Mode, and no Shadowrocket / Surge / Loon.**
+
+iPhones work out where they are partly by reading the Wi‑Fi access points and cell towers around them and asking Apple where each one is (`/clls/wloc`). Network mode answers that question itself, with the place you picked. It does it entirely on the device, through the same packet-tunnel extension Locus already ships:
+
+1. The tunnel tells iOS to resolve **only Apple's location hosts** through it. The packet loop answers those DNS questions with the tunnel's own address (it builds the reply packet itself — no socket, no port 53).
+2. TCP 443 to that address is steered to a TLS listener in the extension. The existing address swap already hands such connections to the device's own kernel, so there is no userspace TCP stack.
+3. The listener forwards each request to the real server and rewrites the coordinates in the `/clls/wloc` reply — latitude, longitude and accuracy, nothing else. Other requests on those hosts, and any reply that doesn't parse, pass through untouched. It will only ever talk to the five allow-listed hosts.
+
+Setup is in **Settings → Spoofing method → Network → Set up network mode**: create the certificate, install it, switch it on under *Certificate Trust Settings*, and run the built-in test, which reports whether certificate, tunnel, DNS and proxy each work.
+
+**About the certificate.** It is generated on the device. The authority is name-constrained to Apple's location hosts, and its private key is thrown away as soon as it has signed the one leaf certificate — nothing can be issued from it afterwards, and it cannot vouch for any other site.
+
+**Limits, honestly:**
+
+- It changes **Wi‑Fi and cell-tower positioning only**. With a clear sky, GPS can still report where you really are; indoors, it usually follows.
+- iOS re-asks only now and then. After teleporting, turn Location Services off and on (or toggle Airplane Mode) to make it ask straight away.
+- It **teleports**; it doesn't move. Routes and the joystick are best on the developer method.
+- It needs **Locus' own tunnel**, so the same signing requirement as the built-in tunnel applies (a paid developer account). LocalDevVPN can't provide it.
+- The method was reimplemented from the idea behind [ios-location-spoofer](https://github.com/mekos2772/ios-location-spoofer) (itself built on [acheong08/ios-location-spoofer](https://github.com/acheong08/ios-location-spoofer)); no code was copied.
 
 ### Links Locus understands
 

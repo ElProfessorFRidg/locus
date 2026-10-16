@@ -273,8 +273,8 @@ final class SpoofSession: ObservableObject {
     // MARK: - Teleport
 
     func teleport(to coordinate: CLLocationCoordinate2D, pairing: PairingStore) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
+        if let problem = SpoofBackend.current.readinessProblem(pairing: pairing) {
+            lastError = problem
             return
         }
         setPin(coordinate)
@@ -303,16 +303,29 @@ final class SpoofSession: ObservableObject {
         stopResend()
         stopHealth()
         isBusy = true
-        finishStop(await LocationEngine.clear())
+        // Clearing the developer service needs the tunnel, and reconnects over
+        // it if the old session is gone — so bring it back first if it dropped.
+        if SpoofBackend.current.usesDeveloper {
+            await prepareTunnel()
+        }
+        finishStop(await LocationEngine.clear(
+            pairingPath: pairing.hasPairingFile ? pairing.pairingPath : nil,
+            deviceIP: TunnelConfig.targetIP
+        ))
     }
 
     private func finishStop(_ result: Result<Void, LocationEngineError>) {
         isBusy = false
         switch result {
         case .success:
+            let wasNetwork = SpoofBackend.current.usesNetwork && simulated != nil
             simulated = nil
             status = .idle
             endBackground()
+            if wasNetwork {
+                // iOS keeps the positions it was given until it next asks.
+                flash("Stopped — turn Location Services off and on to get your real location back")
+            }
             // Keep location updates running so the map puck / locate button
             // can return to the real GPS fix (not the leftover pin).
             locationKeeper.start()
@@ -321,6 +334,21 @@ final class SpoofSession: ObservableObject {
             status = .dropped(error.localizedDescription)
             postDropNotification(error.localizedDescription)
         }
+    }
+
+    /// Network mode keeps going without the app: the extension holds the
+    /// coordinate. On launch, pick that spoof back up instead of showing "not
+    /// spoofing" over one that is still in force.
+    func adoptNetworkSpoofIfRunning(pairing: PairingStore) async {
+        guard SpoofBackend.current.usesNetwork, status == .idle, simulated == nil,
+              let running = await NetworkSpoofer.shared.adoptRunning() else { return }
+        let coordinate = CLLocationCoordinate2D(latitude: running.latitude, longitude: running.longitude)
+        simulated = coordinate
+        setPin(coordinate)
+        status = .active
+        beginBackground()
+        startResend(pairing: pairing)
+        startHealth(pairing: pairing)
     }
 
     /// Best-known real device coordinate (not the teleport pin).
@@ -346,6 +374,11 @@ final class SpoofSession: ObservableObject {
     private func prepareTunnel() async -> Bool {
         let controller = TunnelController.shared
 
+        // Network mode brings its own tunnel up inside `NetworkSpoofer.set`, and
+        // only Locus' own will do — pointing someone at LocalDevVPN here would
+        // be pointing them at something that can't help.
+        if SpoofBackend.current == .network { return true }
+
         if controller.autoConnect {
             if await controller.ensureConnected() { return true }
         } else if TunnelController.loopbackReachable {
@@ -368,8 +401,8 @@ final class SpoofSession: ObservableObject {
     // MARK: - Joystick
 
     func startJoystick(pairing: PairingStore) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
+        if let problem = SpoofBackend.current.readinessProblem(pairing: pairing) {
+            lastError = problem
             return
         }
         let start = simulated ?? pin ?? locationKeeper.lastKnownCoordinate
@@ -474,8 +507,8 @@ final class SpoofSession: ObservableObject {
         startingAt startDistance: CLLocationDistance = 0,
         roads: [RoadSegment] = []
     ) {
-        guard pairing.hasPairingFile else {
-            lastError = "Import an RPPairing file in Settings first."
+        if let problem = SpoofBackend.current.readinessProblem(pairing: pairing) {
+            lastError = problem
             return
         }
         guard coordinates.count >= 2 else {
@@ -983,7 +1016,17 @@ final class SpoofSession: ObservableObject {
                 // walker both come through here, and buzzing once a second for
                 // an hour is not confirmation, it's a fault.
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                flash("Now at \(suggestedFavoriteName(for: coordinate))")
+                if SpoofBackend.current == .network {
+                    // Nothing has moved yet: the reply is only rewritten when iOS
+                    // next asks Apple, and saying "now at" before that is a lie.
+                    // GPS wins over network positioning within seconds; with a
+                    // pairing file, Both is what keeps the place from slipping.
+                    flash(pairing.hasPairingFile
+                          ? "Set to \(suggestedFavoriteName(for: coordinate)) — GPS can pull it back; Both holds it"
+                          : "Set to \(suggestedFavoriteName(for: coordinate)) — asking iOS to look again")
+                } else {
+                    flash("Now at \(suggestedFavoriteName(for: coordinate))")
+                }
             }
         case .failure(let error):
             lastError = error.localizedDescription

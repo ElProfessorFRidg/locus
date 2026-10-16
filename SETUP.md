@@ -57,6 +57,18 @@ Locus is sideloaded, so the built-in tunnel doesn't always survive installation.
 
 Tap the message for the full explanation, including what this copy was actually signed with. A **Tunnel log unavailable** notice is only a warning: the App Group was stripped, so the extension's own log can't be read, but the tunnel itself is fine.
 
+## 3b. Network mode (instead of pairing)
+
+Can't pair, or no Developer Mode? On the pairing step tap **Can't pair? Use network mode instead** (or later: Settings → Spoofing method → Network).
+
+1. **Create and install certificate** — Safari asks to download a profile; allow it.
+2. Settings › General › **VPN & Device Management** → install *Locus Location Authority*.
+3. Settings › General › About › **Certificate Trust Settings** → switch it on.
+4. Back in Locus, **Test network mode**. All four rows should pass.
+5. Drop a pin → Teleport, then turn **Location Services off and on** so iOS asks Apple again.
+
+It needs Locus' own tunnel (not LocalDevVPN) and only moves Wi‑Fi/cell positioning — see the README for the limits.
+
 ## 4. Teleport
 
 On Wi‑Fi: drop a pin → **Teleport**. Then joystick / routes / GPX work; the session can continue on cellular.

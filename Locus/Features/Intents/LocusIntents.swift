@@ -169,8 +169,8 @@ struct TeleportIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let session = SpoofSession.shared
 
-        guard PairingStore.shared.hasPairingFile else {
-            throw LocusIntentError.notPaired
+        if let problem = SpoofBackend.current.readinessProblem(pairing: PairingStore.shared) {
+            throw LocusIntentError.failed(problem)
         }
 
         // A stale error from an earlier failure would otherwise be read as
@@ -272,8 +272,8 @@ struct DriveSavedRouteIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        guard PairingStore.shared.hasPairingFile else {
-            throw LocusIntentError.notPaired
+        if let problem = SpoofBackend.current.readinessProblem(pairing: PairingStore.shared) {
+            throw LocusIntentError.failed(problem)
         }
 
         let session = SpoofSession.shared
