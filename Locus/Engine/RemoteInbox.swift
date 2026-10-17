@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import notify
 import UIKit
 
 /// Commands as files, for when Locus is launched with nothing to open: started
