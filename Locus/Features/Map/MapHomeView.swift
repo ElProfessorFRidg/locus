@@ -1163,19 +1163,24 @@ struct MapHomeView: View {
                 session.lastError = "That GPX file has no track to follow."
                 return
             }
+            // GPX is WGS-84 by definition; the map is GCJ-02 in mainland
+            // China. Moved into map space so the track sits on the roads it
+            // was recorded on — and comes back out unchanged when it is sent.
+            let datum = MapDatumMode.current
+            let coordinates = track.coordinates.map { datum.fromWGS84($0) }
 
             // Timestamps are kept only when there is one per point: resampling
             // the coordinates without them would leave the two arrays out of
             // step, and a pace mapped onto the wrong places is worse than none.
             workspace.adoptRawPath(
-                track.coordinates,
+                coordinates,
                 named: url.deletingPathExtension().lastPathComponent,
                 recordedTimes: track.hasTiming ? track.times : nil
             )
             workspace.drawnPath.removeAll()
-            session.setPin(track.coordinates[0])
+            session.setPin(coordinates[0])
             refreshPreview()
-            focus(on: track.coordinates)
+            focus(on: coordinates)
 
             if track.hasTiming {
                 importedPaceHint = DriveFormat.clock(track.duration)
@@ -1195,8 +1200,9 @@ struct MapHomeView: View {
         // Timestamps too, when the route has them: exporting a recorded track
         // and importing it back used to flatten it to a bare line, losing the
         // one thing that made it a recording.
+        let datum = MapDatumMode.current
         let gpx = GPXCodec.export(
-            path,
+            path.map { datum.toWGS84($0) },
             name: name,
             times: workspace.selectedRoute?.recordedTimes
         )

@@ -44,6 +44,15 @@ struct SetupFlowView: View {
         return false
     }
 
+    /// Installed with TrollStore, or on a jailbreak: Locus sets the location
+    /// through `locationd` itself, so the pairing and tunnel pages have nothing
+    /// to ask for. The walkthrough is the welcome and the interface choice.
+    private var usesDirect: Bool { LocationBackend.current == .direct }
+
+    private var steps: [Step] {
+        usesDirect ? [.welcome, .interface] : Step.allCases
+    }
+
     var body: some View {
         ZStack {
             background
@@ -313,7 +322,7 @@ struct SetupFlowView: View {
 
     private var progressBar: some View {
         HStack(spacing: 8) {
-            ForEach(Step.allCases, id: \.rawValue) { s in
+            ForEach(Array(steps.enumerated()), id: \.element.rawValue) { index, s in
                 Button {
                     go(to: s)
                 } label: {
@@ -329,7 +338,7 @@ struct SetupFlowView: View {
                 // Backwards only. Jumping forward would skip the pairing this
                 // whole flow exists to collect.
                 .disabled(s.rawValue >= step.rawValue)
-                .accessibilityLabel("Step \(s.rawValue + 1) of \(Step.allCases.count)")
+                .accessibilityLabel("Step \(index + 1) of \(steps.count)")
                 .accessibilityAddTraits(s == step ? [.isSelected] : [])
             }
         }
@@ -337,8 +346,8 @@ struct SetupFlowView: View {
     }
 
     private func goBack() {
-        guard let previous = Step(rawValue: step.rawValue - 1) else { return }
-        go(to: previous)
+        guard let index = steps.firstIndex(of: step), index > 0 else { return }
+        go(to: steps[index - 1])
     }
 
     /// Moves a page, and points the slide the right way. Set inside the same
@@ -385,13 +394,16 @@ struct SetupFlowView: View {
             Spacer()
 
             VStack(spacing: 14) {
-                Text("A short setup — about two minutes.")
+                Text(usesDirect
+                     ? "This copy sets the location directly — nothing to pair, no tunnel to switch on."
+                     : "A short setup — about two minutes.")
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
 
                 primaryButton("Get started") {
                     SetupGate.markInProgress()
-                    go(to: .pairing)
+                    go(to: usesDirect ? .interface : .pairing)
                 }
             }
             .padding(.horizontal, 24)

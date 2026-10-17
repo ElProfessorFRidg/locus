@@ -21,7 +21,7 @@ struct ProReadoutView: View {
                 verdictSection
                 if let reading = probe.reading { fixSection(reading) }
                 requestedSection
-                if SpoofBackend.current.usesNetwork, let status = spoofer.status { networkSection(status) }
+                if session.backend == .tunnel, SpoofBackend.current.usesNetwork, let status = spoofer.status { networkSection(status) }
                 notesSection
             }
             .navigationTitle("What apps see")
@@ -35,7 +35,7 @@ struct ProReadoutView: View {
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 while !Task.isCancelled {
-                    if SpoofBackend.current.usesNetwork { await spoofer.refreshStatus() }
+                    if session.backend == .tunnel, SpoofBackend.current.usesNetwork { await spoofer.refreshStatus() }
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                 }
             }
@@ -88,7 +88,8 @@ struct ProReadoutView: View {
 
     private var requestedSection: some View {
         Section {
-            row("Method", SpoofBackend.current.title, tint: nil)
+            // The direct engine replaces whichever method is picked in Settings.
+            row("Method", session.backend.title, tint: nil)
             row("Locus is spoofing", session.isSpoofing ? "Yes" : "No",
                 tint: session.isSpoofing ? LocusTheme.statusGood : nil)
             if let target = session.simulated {

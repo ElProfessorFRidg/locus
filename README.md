@@ -12,6 +12,7 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 ## Features
 
 - One-tap teleport (map pin or place search)
+- **Direct simulation on TrollStore and jailbroken phones** — Geranium's LocSim method: no pairing file, no tunnel, and the location stays put after Locus is closed
 - **Built-in tunnel** — Locus raises the loopback tunnel itself, no second app to launch
 - **Network mode** — no pairing file, no Developer Mode, no proxy app: Locus rewrites Apple's Wi‑Fi/cell positioning replies itself, inside its own tunnel
 - Live joystick — walk / run / cycle / drive with light speed variation
@@ -37,6 +38,8 @@ Free and open-source iPhone location teleport. Tap the map, search a place, or d
 - First-run setup walkthrough
 - Liquid Glass UI on iOS 26, with a matched material fallback on 18–25
 - **Two interfaces** — the full one, and a Fun mode for someone who has never sideloaded anything
+- Correct placement in mainland China, where Apple's map is drawn in GCJ-02
+- Time zone follows the teleport
 - Fully on-device — no analytics, nothing uploaded
 
 ## Two interfaces
@@ -115,19 +118,28 @@ While a route plays, speed, the limit sign and progress appear on the **Lock Scr
 
 See [SETUP.md](SETUP.md) for full steps. Grab a prebuilt IPA from [Releases](https://github.com/ChrisMack32/Locus/releases), or build from source below.
 
+Locus needs **iOS 17.0 or later**.
+
 ### Builds from CI
 
-Every push builds an unsigned IPA and publishes it to a **Release**, as the raw `.ipa` — not wrapped in a zip, so a sideloader can install it straight from the link.
+Every push builds the app once and publishes it to a **Release** four ways — each the raw file, not wrapped in a zip, so it installs straight from the link:
+
+| File | For | Sets the location through |
+| --- | --- | --- |
+| `Locus.ipa` | Any sideloader (unsigned — it re-signs it) | The developer tunnel |
+| `Locus.tipa` | TrollStore; or a jailbreak with TrollStore / AppSync | `locationd` directly |
+| `Locus-rootless.deb` | Rootless jailbreaks (Dopamine, palera1n, nathanlr) | `locationd` directly |
+| `Locus-rootful.deb` | Rootful jailbreaks (palera1n rootful) | `locationd` directly |
 
 | Branch | Download |
 | --- | --- |
-| `main` | `https://github.com/ElProfessorFRidg/locus/releases/download/latest/Locus.ipa` |
-| any other branch | `.../releases/download/latest-<branch-with-dashes>/Locus.ipa` |
-| tagged `v*` | `.../releases/download/<tag>/Locus-<tag>.ipa` |
+| `main` | `https://github.com/ElProfessorFRidg/locus/releases/download/latest/Locus.ipa` (or `Locus.tipa`, `Locus-rootless.deb`, `Locus-rootful.deb`) |
+| any other branch | `.../releases/download/latest-<branch-with-dashes>/Locus.ipa` (same names) |
+| tagged `v*` | `.../releases/download/<tag>/Locus-<tag>.ipa` (`.tipa`, `-rootless.deb`, `-rootful.deb`) |
 
 Branch builds use a **rolling** release: the tag is replaced on every push, so the URL never changes and there's exactly one build to grab rather than a list to date-sort. Each run also prints its own download link in the Actions summary.
 
-CI fails the build if either extension is missing from the IPA, so a release can't silently ship without the built-in tunnel or the Live Activity.
+CI fails the build if either extension is missing from the IPA, so a release can't silently ship without the built-in tunnel or the Live Activity. It also fails if the `.tipa` isn't signed with `com.apple.locationd.simulation`, if any of its three binaries is unsigned, if it asks for more than iOS 17.0, or if either `.deb` puts the app anywhere but where its jailbreak keeps applications.
 
 Bundle ID: `com.chrismack.locus`
 
@@ -140,6 +152,31 @@ File pickers often don’t work inside LiveContainer. Use one of these:
 3. Copy the RPPairing plist contents → in Locus use **Paste RPPairing from clipboard** (setup or Settings).
 
 ## How it works
+
+Locus has two engines, and picks the one this copy can use.
+
+### Direct — TrollStore and jailbroken phones
+
+Apple's location simulation lives in `locationd`, behind a private class, `CLSimulationManager`, and one entitlement, `com.apple.locationd.simulation`. Xcode reaches it through a developer service on the phone that holds that entitlement. An app that holds it itself can make the same calls from its own process — which is what [Geranium](https://github.com/c22dev/Geranium)'s LocSim does, and what Locus does when it can.
+
+No sideloader can grant that entitlement. TrollStore can, and so can a jailbreak, so `Locus.tipa` and the `.deb`s are signed with it. At launch Locus asks the kernel what its own code signature actually holds (`SecTaskCopyValueForEntitlement`) — not what a provisioning profile says, and not how it was installed — so any route that keeps the entitlement works, and any route that strips it (a sideloader re-signing the `.tipa`) quietly falls back to the tunnel.
+
+What that changes:
+
+- **Nothing to set up.** No pairing file, no tunnel, no VPN prompt; the walkthrough is two screens.
+- **It stays set.** The simulation is `locationd`'s, not a connection Locus holds open, so it survives Locus being closed — exactly as in Geranium. Locus remembers it (and which boot it belongs to), so reopening shows where you are, with Stop.
+- **More than coordinates.** The developer service takes a latitude and a longitude. `CLSimulationManager` takes a whole `CLLocation`, so routes and the joystick report their **speed and heading** to every app, a stop reports zero, and an **altitude** can be set in Settings → Location.
+- **Checked, not assumed.** `CLSimulationManager` returns nothing, and a `locationd` that ignores the caller ignores it silently. So after the first teleport Locus asks CoreLocation where the phone now is; if it is still somewhere else, Locus says so and points at the tunnel. Settings → Location shows the verdict and can check again.
+- **Stop sticks.** Stopping is sent three times, a moment apart — Geranium has a setting for this because one stop sometimes doesn't take.
+
+Bookmarks saved in Geranium or Mika's LocSim can be imported from Settings → Location.
+
+### Both engines
+
+- **China.** In mainland China Apple's map is drawn in GCJ-02, a mandated offset of a few hundred metres, and every tap, search result and route MapKit hands back is in it. Locus converts at the edge — map → WGS-84 when a location is sent, WGS-84 → map for CoreLocation's own fix and for GPX files — so a teleport lands on the pin. Automatic by default, and limited to mainland China (not Hong Kong, Macau, Taiwan, Korea or Japan, all of which the usual single rectangle wrongly covers); Settings → Location can force it on or off.
+- **Time zone.** After a teleport Locus asks iOS to re-derive the time zone from the new location, so the clock moves with you when Date & Time is set automatically. Settings → Location → *Time zone follows the location*.
+
+### Tunnel — everything else
 
 Locus uses the MIT-licensed [idevice](https://github.com/jkcoxson/idevice) FFI to talk to Apple’s DVT location simulation over an on-device developer tunnel (the same class of mechanism Xcode uses).
 
@@ -262,6 +299,8 @@ CI runs it before the archive, so a failing assertion stops the build rather tha
 | **Reading a road number** | What separates an autoroute from a distance in metres is one lookahead in a regex, and getting it wrong would silently poison every limit on the route. Every prefix, every suffix, and both directions of the rule that claims an unnamed stretch. |
 | **Fun mode's dial** | It is the one speed in the app set by dragging rather than typed, and nothing downstream re-reads what it meant. Every band, both units, and that the profile it builds needs none of the engine's clamps. |
 | **What you've changed** | The summary of a profile is only worth reading if it is complete, and a parameter added to `DriveProfile` and forgotten in the table would silently never appear. Reflection checks the two lists still match, so that mistake fails the build instead of shipping. |
+| **The China map offset** | Wrong one way, every teleport in China lands on the wrong block; wrong the other, every one in Seoul, Tokyo or Hong Kong does. Checked against the published reference pair, round-tripped to a millimetre, and asked about a dozen cities on both sides of the border. |
+| **Bookmarks from Geranium and LocSim** | Two loosely typed plists from other apps. One malformed entry must cost that entry, not the import. |
 
 Two bugs that had been shipping fell out of the suite's first run — every bend reading as twice as open as it is, and an inverted wait range collapsing instead of swapping — and several more were caught in new code before it ever shipped. Each is described in the commit that fixed it.
 
@@ -270,5 +309,7 @@ Two bugs that had been shipping fell out of the suite's first run — every bend
 MIT. `Vendor/idevice` contains the idevice FFI (MIT).
 
 The built-in tunnel (`LocusTunnel/`) is **based on and uses code from [LocalDevVPN](https://github.com/ElProfessorFRidg/LocalDevVPN) (formerly StosVPN)** by Stossy11 and the SideStore Team, used under the StosVPN License. The packet-rewrite strategies and the cellular-rebind workaround come from that project; the method ladder, the connectivity-confirmed connect and the runtime bundle-ID discovery are Locus'. The same attribution appears in the app under Settings → About.
+
+The direct engine follows [Geranium](https://github.com/c22dev/Geranium)'s LocSim by c22dev — the `CLSimulationManager` call sequence, the time-zone nudge, the repeated stop, and the GCJ-02 correction contributed there by acg7878. No Geranium source is included; the GCJ-02 formulas are the standard published ones.
 
 Locus is an independent open-source project and is not affiliated with Mirage / Wapixel.

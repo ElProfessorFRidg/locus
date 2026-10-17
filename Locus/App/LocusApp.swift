@@ -53,6 +53,11 @@ struct LocusApp: App {
                 // Profile edits are coalesced while a slider is moving. Leaving
                 // the foreground is the moment that window has to close.
                 if phase != .active { session.profiles.flush() }
+                switch phase {
+                case .background: session.sceneDidEnterBackground()
+                case .active: session.sceneWillEnterForeground()
+                default: break
+                }
             }
         }
     }

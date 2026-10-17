@@ -2,7 +2,7 @@ name: Locus
 options:
   bundleIdPrefix: com.chrismack
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "17.0"
   xcodeVersion: "16.0"
   createIntermediateGroups: true
   # Icon Composer packages must be treated as a single file, not exploded.
@@ -15,9 +15,9 @@ settings:
     DEVELOPMENT_TEAM: ""
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
-    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
-    MARKETING_VERSION: "1.2.0"
-    CURRENT_PROJECT_VERSION: "5"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    MARKETING_VERSION: "1.3.0"
+    CURRENT_PROJECT_VERSION: "6"
 targets:
   Locus:
     type: application
@@ -119,6 +119,8 @@ targets:
       - path: Locus/Support/RoadClass.swift
       - path: Locus/Support/RouteShape.swift
       - path: Locus/Support/SavedPlace.swift
+      - path: Locus/Support/MapDatum.swift
+      - path: Locus/Support/LegacyBookmarks.swift
       - path: Locus/Support/X509Builder.swift
       - path: LocusTunnel/Shared/WLocRewriter.swift
       - path: LocusTunnel/Shared/InterceptDNS.swift

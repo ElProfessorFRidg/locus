@@ -88,7 +88,11 @@ struct RootView: View {
         .task {
             // One quiet attempt on launch: if the loopback subnet is already up
             // this does nothing at all, so it costs a check, not a VPN prompt.
-            if SpoofBackend.current.usesNetwork {
+            // Not when the direct engine is in use: it needs no tunnel, and
+            // this would be a VPN prompt for nothing.
+            if !session.backend.needsTunnel {
+                // Nothing to raise or reattach.
+            } else if SpoofBackend.current.usesNetwork {
                 if SpoofBackend.current.usesDeveloper, tunnel.autoConnect {
                     await tunnel.ensureConnected()
                 }
@@ -240,7 +244,7 @@ struct StatusBarView: View {
         case .active:
             // Network mode is only "spoofing" once iOS has actually been handed
             // a rewritten reply; before that, say what it's waiting for.
-            if SpoofBackend.current == .network, !spoofer.hasTakenEffect {
+            if session.backend == .tunnel, SpoofBackend.current == .network, !spoofer.hasTakenEffect {
                 return .waitingForIOS
             }
             return .spoof("Spoofing")
@@ -251,7 +255,8 @@ struct StatusBarView: View {
             break
         }
 
-        if loopbackUp { return .ready }
+        // The direct engine is always ready: there is no tunnel to report on.
+        if loopbackUp || !session.backend.needsTunnel { return .ready }
 
         switch tunnel.state {
         case .connecting:
@@ -288,7 +293,7 @@ struct StatusBarView: View {
         case .spoof:
             switch session.status {
             case .active:
-                return SpoofBackend.current == .network && !spoofer.hasTakenEffect
+                return session.backend == .tunnel && SpoofBackend.current == .network && !spoofer.hasTakenEffect
                     ? LocusTheme.statusWarn : LocusTheme.statusGood
             case .connecting, .reconnecting: return LocusTheme.statusWarn
             case .dropped: return LocusTheme.statusBad
@@ -334,7 +339,7 @@ struct StatusBarView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 refresh()
-                if SpoofBackend.current == .network, session.isSpoofing, !spoofer.hasTakenEffect {
+                if session.backend == .tunnel, SpoofBackend.current == .network, session.isSpoofing, !spoofer.hasTakenEffect {
                     await spoofer.refreshStatus()
                 }
             }
