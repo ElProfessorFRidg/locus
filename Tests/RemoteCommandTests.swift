@@ -118,6 +118,26 @@ final class RemoteCommandTests: XCTestCase {
                        .route(name: "$(reboot); ../../etc"))
     }
 
+    // MARK: go
+
+    func testGo() {
+        XCTAssertEqual(command("locus://go?lat=48.8584&lon=2.2945&key=k"),
+                       .go(RemoteCoordinate(latitude: 48.8584, longitude: 2.2945)))
+        XCTAssertEqual(command("locus://go?key=k&lon=-180&lat=-90"),
+                       .go(RemoteCoordinate(latitude: -90, longitude: -180)))
+        XCTAssertEqual(RemoteCommand.go(RemoteCoordinate(latitude: 0, longitude: 0)).name, "go")
+        XCTAssertEqual(RemoteCommandParser.commandName(of: URL(string: "locus://go?lat=1&lon=2")!), "go")
+    }
+
+    func testGoRefusals() {
+        for bad in ["lat=91&lon=0", "lat=0&lon=181", "lat=nan&lon=0", "lat=1e1&lon=0", "lat=x&lon=0",
+                    "lat=1", "lon=1", "lat=&lon=1", "lat=1&lon=2&lat=3", "lat=1&lon=2&name=x"] {
+            XCTAssertNotNil(refusal("locus://go?\(bad)&key=k"), bad)
+        }
+        XCTAssertNotNil(refusal("locus://go?lat=1&lon=2"), "no key")
+        XCTAssertNil(RemoteCommandParser.key(in: URL(string: "locus://go?lat=1&lon=2")!))
+    }
+
     func testStop() {
         XCTAssertEqual(command("locus://stop?key=k"), .stop)
         XCTAssertEqual(RemoteCommand.stop.name, "stop")

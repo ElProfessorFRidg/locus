@@ -230,13 +230,15 @@ For a jailbroken device driven from outside — a script, or a web UI that runs 
 locus://drive?to=<lat>,<lon>[&from=<lat>,<lon>][&mode=drive|walk|cycle][&profile=<name>][&speed=0.5-8][&loop=0|1|2]&key=<key>
 locus://route?name=<saved route name>&key=<key>
 locus://stop?key=<key>
+locus://go?lat=<lat>&lon=<lon>&key=<key>
 ```
 
 - **drive** builds a MapKit route and plays it. `from` defaults to the simulated position, else the real one; coordinates are in the same space as `locus://teleport`. `mode` defaults to `drive`; `cycle` is the app's cycle mode (MapKit still routes it as a car). `profile` is the exact name (case-insensitive) of an existing driving profile — an unknown one is an error, not a fallback. `speed` is the playback time scale. `loop`: 0 stop at the end, 1 loop, 2 back and forth. Profile, speed, loop and mode apply to that drive only; saved profiles and the mode picker are left alone.
 - **route** plays the saved route with that name (case-insensitive; if several match, the most recently driven).
+- **go** teleports to the coordinates, like the Siri intent, without needing any screen to be showing (unlike `locus://teleport`, which only a mounted map handles). Same coordinate space as `teleport`; the result lands in `lastCommand` (`name: "go"`).
 - **stop** stops routes, joystick and simulation.
 - Names must be URL-encoded (`%20` for a space), at most 120 characters. Anything malformed, repeated, unknown or out of range is refused.
-- `teleport` and `pin` work as before, with no key.
+- `teleport` and `pin` work as before, with no key (and need the map on screen).
 
 **The key.** Put a secret in `/var/jb/var/locate-ipad/locus.key` (first line, surrounding whitespace ignored) and pass it as `key=`. If the file is missing, unreadable or empty, remote control is off; a wrong key is ignored. Either way nothing moves and the reason lands in `lastCommand` below. The key is compared in constant time and never logged.
 

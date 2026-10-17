@@ -34,12 +34,15 @@ enum RemoteCommand: Equatable {
     case drive(RemoteDriveRequest)
     case route(name: String)
     case stop
+    /// Teleport, without needing a map on screen.
+    case go(RemoteCoordinate)
 
     var name: String {
         switch self {
         case .drive: return "drive"
         case .route: return "route"
         case .stop: return "stop"
+        case .go: return "go"
         }
     }
 }
@@ -53,7 +56,7 @@ enum RemoteCommandParser {
     static let scheme = "locus"
     /// The commands that move (or stop) the phone, and so need the key. `teleport`
     /// and `pin` are not here: they keep their old behaviour untouched.
-    static let commandNames: Set<String> = ["drive", "route", "stop"]
+    static let commandNames: Set<String> = ["drive", "route", "stop", "go"]
 
     static let maxNameLength = 120
     static let maxKeyLength = 256
@@ -63,6 +66,7 @@ enum RemoteCommandParser {
         "drive": ["to", "from", "mode", "profile", "speed", "loop", "key"],
         "route": ["name", "key"],
         "stop": ["key"],
+        "go": ["lat", "lon", "key"],
     ]
 
     /// The command a URL names, or `nil` when it is not one of ours.
@@ -109,6 +113,16 @@ enum RemoteCommandParser {
         switch command {
         case "stop":
             return .success(.stop)
+
+        case "go":
+            guard let rawLat = values["lat"], let rawLon = values["lon"] else {
+                return .failure(RemoteCommandError("go needs lat= and lon="))
+            }
+            guard let latitude = number(rawLat), let longitude = number(rawLon),
+                  (-90...90).contains(latitude), (-180...180).contains(longitude) else {
+                return .failure(RemoteCommandError("lat=/lon= out of range or not a number"))
+            }
+            return .success(.go(RemoteCoordinate(latitude: latitude, longitude: longitude)))
 
         case "route":
             guard let raw = values["name"] else {

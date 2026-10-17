@@ -92,6 +92,18 @@ final class RemoteControl {
             await session.stopAndWait(pairing: pairing)
             if let error = session.lastError { throw RemoteCommandError(error) }
 
+        case .go(let target):
+            // Exactly what TeleportIntent does, minus the Siri dialog.
+            try requireReady(session, pairing)
+            session.lastError = nil
+            session.teleport(
+                to: CLLocationCoordinate2D(latitude: target.latitude, longitude: target.longitude),
+                pairing: pairing
+            )
+            if case .failed(let reason) = await LocusIntentSupport.waitForTeleport(session: session) {
+                throw RemoteCommandError(reason)
+            }
+
         case .route(let name):
             try requireReady(session, pairing)
             // Several routes can share a name; the one driven most recently wins.
