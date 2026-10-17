@@ -25,6 +25,9 @@ struct LocusApp: App {
         // `uiopen` cold-launched the app and no map has appeared yet.
         Task { @MainActor in
             RemoteStateWriter.shared.start(session: SpoofSession.shared)
+            // Commands dropped in the inbox directory. Started here for the same
+            // reason: a background launch has no scene, no URL and no view.
+            RemoteInbox.shared.start()
         }
     }
 

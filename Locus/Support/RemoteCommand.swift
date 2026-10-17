@@ -47,6 +47,11 @@ enum RemoteCommand: Equatable {
     }
 }
 
+struct RemoteInboxCommand: Equatable {
+    var id: String
+    var command: RemoteCommand
+}
+
 struct RemoteCommandError: Error, Equatable {
     var message: String
     init(_ message: String) { self.message = message }
@@ -110,6 +115,13 @@ enum RemoteCommandParser {
             return .failure(RemoteCommandError("missing or oversized key"))
         }
 
+        _ = key
+        return build(command, values)
+    }
+
+    /// Turns validated-for-shape parameters into a typed command. Shared by the
+    /// URL grammar and the inbox's JSON, so the two can't drift apart.
+    private static func build(_ command: String, _ values: [String: String]) -> Result<RemoteCommand, RemoteCommandError> {
         switch command {
         case "stop":
             return .success(.stop)
@@ -136,6 +148,106 @@ enum RemoteCommandParser {
         default:
             return parseDrive(values)
         }
+    }
+
+    // MARK: - Inbox (JSON files)
+
+    static let maxInboxBytes = 4096
+
+    /// 6-32 lowercase hex characters.
+    static func isValidInboxID(_ id: String) -> Bool {
+        (6...32).contains(id.utf8.count) && id.utf8.allSatisfy { ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102) }
+    }
+
+    /// Best-effort command name of a file that may not be valid, for its result.
+    static func inboxCommandName(_ data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cmd = object["cmd"] as? String, commandNames.contains(cmd) else { return "unknown" }
+        return cmd
+    }
+
+    /// `{"id":"<hex>","cmd":"go|drive|route|stop","args":{…}}`.
+    ///
+    /// No key: whoever can write the inbox directory could already read the key
+    /// file, since both sit behind the same sandbox exception. Everything else is
+    /// held to the URL grammar's rules by feeding the same builder.
+    static func parseInbox(_ data: Data, fileID: String) -> Result<RemoteInboxCommand, RemoteCommandError> {
+        guard isValidInboxID(fileID) else { return .failure(RemoteCommandError("bad file name")) }
+        guard data.count <= maxInboxBytes else { return .failure(RemoteCommandError("file too large")) }
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .failure(RemoteCommandError("not a JSON object"))
+        }
+        guard object["id"] as? String == fileID else {
+            return .failure(RemoteCommandError("id does not match the file name"))
+        }
+        guard let cmd = object["cmd"] as? String, commandNames.contains(cmd) else {
+            return .failure(RemoteCommandError("unknown cmd"))
+        }
+        if let extra = object.keys.first(where: { !["id", "cmd", "args"].contains($0) }) {
+            _ = extra
+            return .failure(RemoteCommandError("unknown field"))
+        }
+        let args: [String: Any]
+        if let given = object["args"] {
+            guard let dictionary = given as? [String: Any] else {
+                return .failure(RemoteCommandError("args must be an object"))
+            }
+            args = dictionary
+        } else {
+            args = [:]
+        }
+
+        let allowed = (allowedParameters[cmd] ?? []).subtracting(["key"])
+        var values: [String: String] = [:]
+        for (name, value) in args {
+            guard allowed.contains(name) else {
+                return .failure(RemoteCommandError("unknown arg for \(cmd)"))
+            }
+            let text: String?
+            switch name {
+            case "to", "from": text = coordinateText(value)
+            case "lat", "lon", "speed": text = numberText(value)
+            case "loop": text = integerText(value)
+            default: text = value as? String
+            }
+            guard let text, !text.isEmpty else {
+                return .failure(RemoteCommandError("bad value for '\(name)'"))
+            }
+            values[name] = text
+        }
+        switch build(cmd, values) {
+        case .success(let command): return .success(RemoteInboxCommand(id: fileID, command: command))
+        case .failure(let error): return .failure(error)
+        }
+    }
+
+    private static func isBoolean(_ value: Any) -> Bool {
+        guard let number = value as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    /// A JSON number (or an already-textual one), as the plain decimal the URL
+    /// grammar expects. Not-a-finite-number ends up as text `number()` refuses.
+    private static func numberText(_ value: Any) -> String? {
+        if let text = value as? String { return text }
+        guard let number = value as? NSNumber, !isBoolean(number) else { return nil }
+        let double = number.doubleValue
+        return double.isFinite ? String(format: "%.10f", double) : "nan"
+    }
+
+    private static func integerText(_ value: Any) -> String? {
+        if let text = value as? String { return text }
+        guard let number = value as? NSNumber, !isBoolean(number) else { return nil }
+        let double = number.doubleValue
+        guard double.isFinite, double == double.rounded(), abs(double) < 1000 else { return "x" }
+        return String(Int(double))
+    }
+
+    /// `{"lat":…,"lon":…}` and nothing else, as `<lat>,<lon>`.
+    private static func coordinateText(_ value: Any) -> String? {
+        guard let object = value as? [String: Any], Set(object.keys) == ["lat", "lon"],
+              let lat = numberText(object["lat"]!), let lon = numberText(object["lon"]!) else { return nil }
+        return "\(lat),\(lon)"
     }
 
     // MARK: - drive

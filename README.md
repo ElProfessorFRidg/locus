@@ -247,6 +247,23 @@ locus://go?lat=<lat>&lon=<lon>&key=<key>
 - `locus-state.json` — `ts`, `engine` (`direct`/`tunnel`), `status` (`idle`/`connecting`/`active`/`reconnecting`/`dropped`), `simulating`, `mode` (`idle`/`teleport`/`route`/`joystick`), `position` (`{lat,lon}`, WGS-84 as sent to the engine), `route` (`{name,progressPct,paused}`), `speedKmh`, `loop`, `timeScale`, `profile`, `tunnel` (`direct`/`up`/`down`/`n/a`), `lastCommand` (`{name,ts,ok,error}`), `error`, `version`. Unset fields are `null`. Written on every change (position at most once a second) and at least every 5 seconds while the app is running.
 - `locus-routes.json` — the saved routes: `id`, `name`, `journey`, `distanceM`, `timesDriven`, `lastDriven` (epoch seconds or `null`). Rewritten at launch and whenever the list changes.
 
+**Inbox (no URL, no screen).** For a launch with nothing to open, such as a helper starting Locus in the background on a locked device. Drop `/var/jb/var/locate-ipad/inbox/<id>.json` (id: 6-32 lowercase hex characters, matching the file name; regular file, at most 4 KB):
+
+```
+{"id":"a1b2c3d4","cmd":"go","args":{"lat":48.8584,"lon":2.2945}}
+{"id":"a1b2c3d5","cmd":"drive","args":{"to":{"lat":0,"lon":0},"from":{"lat":0,"lon":0},"mode":"walk","profile":"On foot","speed":2,"loop":1}}
+{"id":"a1b2c3d6","cmd":"route","args":{"name":"Commute"}}
+{"id":"a1b2c3d7","cmd":"stop"}
+```
+
+The same validation as the URLs applies (`from`, `mode`, `profile`, `speed`, `loop` are optional). No key is needed: the directory is only reachable by processes with the file-access exception (and root), who could read `locus.key` anyway; URLs still require it. Locus reads the directory at launch, once a second while awake, when it comes to the front, and on the Darwin notification `com.aubin.locus.inbox` (`notifyutil -p com.aubin.locus.inbox`). Files are handled oldest first and deleted once read, valid or not; symlinks, directories and oversized files are ignored. Each gets `/var/jb/var/locate-ipad/results/<id>.json` (created if missing, pruned after 10 minutes):
+
+```
+{"id":"a1b2c3d4","cmd":"go","ok":true,"error":null,"ts":1760000000,"state":{ ...the locus-state.json object after the command settled... }}
+```
+
+It waits for the command to settle (teleport lands, route starts, stop completes) for at most 25 seconds. It needs no setup or pairing file when the direct engine is available. A drive started from a background launch relies on the background-location mode Locus already declares to keep the process running.
+
 **Limits.** iOS delivers a URL to the app only when it is opened, so `uiopen` brings Locus to the foreground and the device has to be unlocked; there is no way to send a command to a suspended app. A drive keeps running once the app is backgrounded (it holds the background location session), but the state files only update while the app process is alive. The repo targets iOS 17.0 and later; this has only been written against that, not tested on any particular version.
 
 ### The tunnel

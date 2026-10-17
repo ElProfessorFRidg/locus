@@ -21,10 +21,38 @@ final class RemoteControl {
     private var tail: Task<Void, Never>?
 
     func handle(_ url: URL) async {
+        await serialized { [weak self] in await self?.execute(url) }
+    }
+
+    /// Runs a command that has already been parsed and trusted (an inbox file),
+    /// queued behind anything in flight. Returns the error, or `nil` on success,
+    /// and records it as `lastCommand` either way.
+    func perform(_ command: RemoteCommand) async -> String? {
+        var failure: String?
+        await serialized { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.run(command)
+            } catch let error as RemoteCommandError {
+                failure = error.message
+            } catch {
+                failure = error.localizedDescription
+            }
+            self.record(command.name, error: failure)
+        }
+        return failure
+    }
+
+    /// For a result that never got as far as running (invalid file, timeout).
+    func recordFailure(_ name: String, _ message: String) {
+        record(name, error: message)
+    }
+
+    private func serialized(_ work: @escaping @MainActor () async -> Void) async {
         let previous = tail
-        let task = Task { @MainActor [weak self] in
+        let task = Task { @MainActor in
             await previous?.value
-            await self?.execute(url)
+            await work()
         }
         tail = task
         await task.value

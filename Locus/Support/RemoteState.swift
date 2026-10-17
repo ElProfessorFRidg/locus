@@ -123,6 +123,31 @@ struct RemoteRouteEntry: Equatable, Encodable {
     }
 }
 
+/// `results/<id>.json`: what became of one inbox file.
+struct RemoteResult: Equatable, Encodable {
+    var id: String
+    var cmd: String
+    var ok: Bool
+    var error: String?
+    var ts: Int
+    /// The same object as `locus-state.json`, after the command settled.
+    var state: RemoteState?
+
+    enum CodingKeys: String, CodingKey { case id, cmd, ok, error, ts, state }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(cmd, forKey: .cmd)
+        try c.encode(ok, forKey: .ok)
+        try c.encode(error, forKey: .error)
+        try c.encode(ts, forKey: .ts)
+        try c.encode(state, forKey: .state)
+    }
+
+    func jsonData() throws -> Data { try RemoteJSON.encoder.encode(self) }
+}
+
 enum RemoteJSON {
     /// Sorted keys so the files diff cleanly and tests can compare text.
     static var encoder: JSONEncoder {

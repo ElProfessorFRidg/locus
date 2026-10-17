@@ -55,6 +55,20 @@ final class RemoteStateWriter {
     /// like a command's result.
     func writeNow() { write(force: true) }
 
+    /// The state as it is this instant, written out too.
+    func currentState() -> RemoteState? {
+        guard let session else { return nil }
+        let state = snapshot(session)
+        last = state
+        if let data = try? state.jsonData() { persist(data, as: "locus-state.json") }
+        return state
+    }
+
+    /// A file under `results/`, created on demand; silent on failure.
+    func persistResult(_ data: Data, id: String) {
+        persist(data, as: "results/\(id).json")
+    }
+
     // MARK: - state
 
     private func write(force: Bool) {
@@ -180,6 +194,14 @@ final class RemoteStateWriter {
                   isDirectory.boolValue else { return }
             let destination = directory + name
             let temporary = destination + ".tmp"
+            if let slash = name.lastIndex(of: "/") {
+                // One level down, made when missing.
+                let sub = directory + name[..<slash]
+                if !FileManager.default.fileExists(atPath: sub) {
+                    try? FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: false,
+                                                             attributes: [.posixPermissions: 0o755])
+                }
+            }
             do {
                 try data.write(to: URL(fileURLWithPath: temporary))
             } catch {
