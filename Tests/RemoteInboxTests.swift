@@ -114,6 +114,17 @@ final class RemoteInboxTests: XCTestCase {
         XCTAssertEqual(object["ok"] as? Bool, true)
     }
 
+    func testInterface() {
+        XCTAssertEqual(accepted(command("{\"mode\":\"fun\"}", cmd: "interface")), .interface(.fun))
+        XCTAssertEqual(accepted(command("{\"mode\":\"pro\"}", cmd: "interface")), .interface(.pro))
+        for args in ["{}", "{\"mode\":\"x\"}", "{\"mode\":1}", "{\"mode\":\"pro\",\"a\":1}"] {
+            XCTAssertTrue(refused(command(args, cmd: "interface")), args)
+        }
+        let result = RemoteResult(id: id, cmd: "interface", ok: true, error: nil, ts: 1, state: nil, interface: "fun")
+        let object = try! JSONSerialization.jsonObject(with: result.jsonData()) as! [String: Any]
+        XCTAssertEqual(object["interface"] as? String, "fun")
+    }
+
     func testRejectsStopWithArguments() {
         XCTAssertTrue(refused(command("{\"lat\":1}", cmd: "stop")))
     }

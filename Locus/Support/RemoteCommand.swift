@@ -38,6 +38,8 @@ enum RemoteCommand: Equatable {
     case go(RemoteCoordinate)
     /// Render Locus' own window to a PNG. `scale` is 1 or 2.
     case screenshot(scale: Int)
+    /// Swap the on-screen interface, live.
+    case interface(LocusInterfaceMode)
 
     var name: String {
         switch self {
@@ -46,6 +48,7 @@ enum RemoteCommand: Equatable {
         case .stop: return "stop"
         case .go: return "go"
         case .screenshot: return "screenshot"
+        case .interface: return "interface"
         }
     }
 }
@@ -64,7 +67,7 @@ enum RemoteCommandParser {
     static let scheme = "locus"
     /// The commands that move (or stop) the phone, and so need the key. `teleport`
     /// and `pin` are not here: they keep their old behaviour untouched.
-    static let commandNames: Set<String> = ["drive", "route", "stop", "go", "screenshot"]
+    static let commandNames: Set<String> = ["drive", "route", "stop", "go", "screenshot", "interface"]
 
     static let maxNameLength = 120
     static let maxKeyLength = 256
@@ -76,6 +79,7 @@ enum RemoteCommandParser {
         "stop": ["key"],
         "go": ["lat", "lon", "key"],
         "screenshot": ["scale", "key"],
+        "interface": ["mode", "key"],
     ]
 
     /// The command a URL names, or `nil` when it is not one of ours.
@@ -139,6 +143,13 @@ enum RemoteCommandParser {
                 return .failure(RemoteCommandError("lat=/lon= out of range or not a number"))
             }
             return .success(.go(RemoteCoordinate(latitude: latitude, longitude: longitude)))
+
+        case "interface":
+            switch values["mode"]?.lowercased() {
+            case "pro": return .success(.interface(.pro))
+            case "fun": return .success(.interface(.fun))
+            default: return .failure(RemoteCommandError("mode must be pro or fun"))
+            }
 
         case "screenshot":
             switch values["scale"] {

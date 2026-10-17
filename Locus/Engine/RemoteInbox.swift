@@ -113,7 +113,9 @@ final class RemoteInbox {
             error: failure,
             ts: Int(Date().timeIntervalSince1970),
             state: RemoteStateWriter.shared.currentState(),
-            screenshot: failure == nil && command == "screenshot" ? RemoteControl.shared.lastScreenshot : nil
+            screenshot: failure == nil && command == "screenshot" ? RemoteControl.shared.lastScreenshot : nil,
+            interface: failure == nil && command == "interface"
+                ? UserDefaults.standard.string(forKey: LocusInterfaceMode.defaultsKey) : nil
         )
         if let encoded = try? result.jsonData() {
             RemoteStateWriter.shared.persistResult(encoded, id: candidate.id)

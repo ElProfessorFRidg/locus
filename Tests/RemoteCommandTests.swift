@@ -138,6 +138,18 @@ final class RemoteCommandTests: XCTestCase {
         XCTAssertNil(RemoteCommandParser.key(in: URL(string: "locus://go?lat=1&lon=2")!))
     }
 
+    // MARK: interface
+
+    func testInterfaceGrammar() {
+        XCTAssertEqual(command("locus://interface?mode=pro&key=k"), .interface(.pro))
+        XCTAssertEqual(command("locus://interface?mode=FUN&key=k"), .interface(.fun))
+        XCTAssertEqual(RemoteCommand.interface(.fun).name, "interface")
+        for bad in ["", "mode=", "mode=simple", "mode=pro&mode=fun", "mode=pro&x=1", "x=1"] {
+            XCTAssertNotNil(refusal("locus://interface?\(bad)&key=k"), bad)
+        }
+        XCTAssertNotNil(refusal("locus://interface?mode=pro"), "no key")
+    }
+
     // MARK: screenshot
 
     func testScreenshotGrammar() {
@@ -238,7 +250,7 @@ final class RemoteCommandTests: XCTestCase {
         XCTAssertEqual(Set(object.keys), [
             "ts", "engine", "status", "simulating", "mode", "position", "route", "speedKmh", "loop",
             "timeScale", "profile", "tunnel", "lastCommand", "error", "version",
-            "badge", "real", "reportedByCoreLocation",
+            "badge", "real", "reportedByCoreLocation", "interface",
         ])
         for key in ["position", "route", "speedKmh", "loop", "timeScale", "profile", "lastCommand", "error",
                     "real", "reportedByCoreLocation"] {

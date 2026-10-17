@@ -34,9 +34,22 @@ final class LocationVerdictTests: XCTestCase {
         XCTAssertEqual(badge.explanation, "location may still be simulated by locationd")
     }
 
-    func testIdleButFlaggedSimulatedBySoftwareIsUncertain() {
-        XCTAssertEqual(ReadoutVerdict.badge(status: "idle", reportedBySoftware: true, reported: paris, lastReal: paris),
-                       .uncertain)
+    func testIdleButFlaggedSimulatedBySoftwareIsAnotherApp() {
+        let badge = ReadoutVerdict.badge(status: "idle", reportedBySoftware: true, reported: paris, lastReal: paris)
+        XCTAssertEqual(badge, .simulatedExternal)
+        XCTAssertEqual(badge.rawValue, "SIMULATED (another app)")
+        XCTAssertEqual(badge.stateName, "SIMULATED_EXTERNAL")
+        XCTAssertNil(badge.explanation)
+    }
+
+    func testOurOwnSimulationFlaggedBySoftwareIsJustSimulated() {
+        XCTAssertEqual(ReadoutVerdict.badge(status: "active", reportedBySoftware: true, reported: paris, lastReal: nil),
+                       .simulated)
+    }
+
+    func testStateNamesMatchTitlesExceptExternal() {
+        XCTAssertEqual(ReadoutBadge.uncertain.stateName, "MAYBE SIMULATED")
+        XCTAssertEqual(ReadoutBadge.real.stateName, "REAL")
     }
 
     func testOnlyUncertainHasAnExplanation() {

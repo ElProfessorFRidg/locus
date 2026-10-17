@@ -165,9 +165,10 @@ final class RemoteStateWriter {
             lastCommand: RemoteControl.shared.lastCommand,
             error: session.lastError,
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
-            badge: badge.rawValue,
+            badge: badge.stateName,
             real: real,
-            reportedByCoreLocation: reported
+            reportedByCoreLocation: reported,
+            interface: UserDefaults.standard.string(forKey: LocusInterfaceMode.defaultsKey) ?? LocusInterfaceMode.pro.rawValue
         )
     }
 

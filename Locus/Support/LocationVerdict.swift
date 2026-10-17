@@ -14,6 +14,15 @@ enum ReadoutBadge: String, Equatable {
     case interrupted = "INTERRUPTED"
     /// Locus says idle, but Core Location says otherwise.
     case uncertain = "MAYBE SIMULATED"
+    /// Core Location says the fix is simulated by software while Locus itself
+    /// is not simulating: another app is doing it. A fact, not a guess.
+    case simulatedExternal = "SIMULATED (another app)"
+
+    /// The value in `locus-state.json`'s `badge`. Identical to the title except
+    /// for the external case, which is a token rather than a sentence.
+    var stateName: String {
+        self == .simulatedExternal ? "SIMULATED_EXTERNAL" : rawValue
+    }
 
     var explanation: String? {
         self == .uncertain ? "location may still be simulated by locationd" : nil
@@ -38,7 +47,7 @@ enum ReadoutVerdict {
         case "active", "reconnecting", "connecting": return .simulated
         default: break
         }
-        if reportedBySoftware == true { return .uncertain }
+        if reportedBySoftware == true { return .simulatedExternal }
         if let reported, let lastReal, distance(reported, lastReal) > suspiciousDistance {
             return .uncertain
         }

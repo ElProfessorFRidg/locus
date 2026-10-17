@@ -167,6 +167,10 @@ final class RemoteControl: ObservableObject {
             try await confirmStarted(session)
             session.routeStore.markDriven(saved.id)
 
+        case .interface(let mode):
+            // The value @AppStorage reads, so the interface swaps live.
+            UserDefaults.standard.set(mode.rawValue, forKey: LocusInterfaceMode.defaultsKey)
+
         case .screenshot(let scale):
             lastScreenshot = try RemoteScreenshot.capture(id: currentInboxID, scale: scale)
 

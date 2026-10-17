@@ -89,11 +89,13 @@ struct RemoteState: Equatable, Encodable {
     /// The last fix known to be real, `null` until there has been one.
     var real: RealFix? = nil
     var reportedByCoreLocation: Reported? = nil
+    /// The interface on screen: `pro` or `fun`.
+    var interface: String = "pro"
 
     enum CodingKeys: String, CodingKey {
         case ts, engine, status, simulating, mode, position, route, speedKmh, loop
         case timeScale, profile, tunnel, lastCommand, error, version
-        case badge, real, reportedByCoreLocation
+        case badge, real, reportedByCoreLocation, interface
     }
 
     func encode(to encoder: Encoder) throws {
@@ -116,6 +118,7 @@ struct RemoteState: Equatable, Encodable {
         try c.encode(badge, forKey: .badge)
         try c.encode(real, forKey: .real)
         try c.encode(reportedByCoreLocation, forKey: .reportedByCoreLocation)
+        try c.encode(interface, forKey: .interface)
     }
 
     /// The same state a moment later, ignoring the clock — what decides whether
@@ -179,8 +182,12 @@ struct RemoteResult: Equatable, Encodable {
     var state: RemoteState?
     /// Only for `screenshot`, whose fields sit at the top level of the result.
     var screenshot: ScreenshotInfo? = nil
+    /// Only for `interface`: the mode now on screen.
+    var interface: String? = nil
 
-    enum CodingKeys: String, CodingKey { case id, cmd, ok, error, ts, state, file, width, height, mapMayBeBlank }
+    enum CodingKeys: String, CodingKey {
+        case id, cmd, ok, error, ts, state, file, width, height, mapMayBeBlank, interface
+    }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -190,6 +197,7 @@ struct RemoteResult: Equatable, Encodable {
         try c.encode(error, forKey: .error)
         try c.encode(ts, forKey: .ts)
         try c.encode(state, forKey: .state)
+        try c.encodeIfPresent(interface, forKey: .interface)
         if let screenshot {
             try c.encode(screenshot.file, forKey: .file)
             try c.encode(screenshot.width, forKey: .width)

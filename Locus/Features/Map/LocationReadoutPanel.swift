@@ -197,7 +197,7 @@ struct LocationReadoutPanel: View {
         switch badge {
         case .simulated: return LocusTheme.statusWarn
         case .real: return LocusTheme.statusGood
-        case .interrupted, .uncertain: return LocusTheme.statusBad
+        case .interrupted, .uncertain, .simulatedExternal: return LocusTheme.statusBad
         }
     }
 

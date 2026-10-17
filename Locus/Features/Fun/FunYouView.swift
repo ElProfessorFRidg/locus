@@ -59,11 +59,9 @@ struct FunYouView: View {
         .sheet(isPresented: $showAbout) {
             FunAboutSheet()
         }
-        .confirmationDialog(
-            "Switch to Pro?",
-            isPresented: $confirmingPro,
-            titleVisibility: .visible
-        ) {
+        // An alert, not a confirmation dialog: on iPad that is a popover that
+        // needs a source view, and without one the tap seemed to do nothing.
+        .alert("Switch to Pro?", isPresented: $confirmingPro) {
             Button("Switch to Pro") { interface = .pro }
             Button("Stay here", role: .cancel) {}
         } message: {
@@ -81,7 +79,12 @@ struct FunYouView: View {
                 ForEach(LocusInterfaceMode.allCases) { mode in
                     Button {
                         guard mode != interface else { return }
-                        confirmingPro = true
+                        if mode == .pro {
+                            // Leaving Fun for the whole app is worth a question.
+                            confirmingPro = true
+                        } else {
+                            interface = mode
+                        }
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(mode.emoji)
