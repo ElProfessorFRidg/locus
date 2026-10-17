@@ -153,10 +153,8 @@ final class RemoteCommandTests: XCTestCase {
     }
 
     func testMatchingKeyIsAccepted() {
-        XCTAssertNil(gate("s3cret", "s3cret
-"))
-        XCTAssertNil(gate("s3cret", "  s3cret 
-"))
+        XCTAssertNil(gate("s3cret", "s3cret\n"))
+        XCTAssertNil(gate("s3cret", "  s3cret \r\n"))
     }
 
     func testWrongOrMissingKeyIsRefused() {
@@ -170,8 +168,7 @@ final class RemoteCommandTests: XCTestCase {
     func testMissingOrEmptyKeyFileDisablesRemoteControl() {
         XCTAssertEqual(gate("anything", nil), .disabled)
         XCTAssertEqual(gate("anything", ""), .disabled)
-        XCTAssertEqual(gate("", " 
-"), .disabled, "an empty key must not match an empty file")
+        XCTAssertEqual(gate("", " \n"), .disabled, "an empty key must not match an empty file")
         XCTAssertEqual(RemoteAuthFailure.disabled.message, "remote control disabled")
         XCTAssertEqual(RemoteAuthFailure.badKey.message, "bad key")
     }
