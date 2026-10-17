@@ -222,6 +222,31 @@ locus://teleport?lat=48.85837&lon=2.29448
 
 `locus://pin` only drops the pin; `locus://teleport` sets the location. Both bring Locus to the front, so nothing happens without you seeing it. Long-press the status bar (or any saved place) to copy coordinates, copy a `locus://` link back, open the spot in Maps, or share it.
 
+### Remote control (jailbreak)
+
+For a jailbroken device driven from outside — a script, or a web UI that runs `uiopen` over ssh. It needs the **direct** engine and the `.deb`/`.tipa` signed by CI, which carries a sandbox exception for `/var/jb/var/locate-ipad/` (rootless layout; the other builds don't have it, and the commands below then answer "remote control disabled").
+
+```
+locus://drive?to=<lat>,<lon>[&from=<lat>,<lon>][&mode=drive|walk|cycle][&profile=<name>][&speed=0.5-8][&loop=0|1|2]&key=<key>
+locus://route?name=<saved route name>&key=<key>
+locus://stop?key=<key>
+```
+
+- **drive** builds a MapKit route and plays it. `from` defaults to the simulated position, else the real one; coordinates are in the same space as `locus://teleport`. `mode` defaults to `drive`; `cycle` is the app's cycle mode (MapKit still routes it as a car). `profile` is the exact name (case-insensitive) of an existing driving profile — an unknown one is an error, not a fallback. `speed` is the playback time scale. `loop`: 0 stop at the end, 1 loop, 2 back and forth. Profile, speed, loop and mode apply to that drive only; saved profiles and the mode picker are left alone.
+- **route** plays the saved route with that name (case-insensitive; if several match, the most recently driven).
+- **stop** stops routes, joystick and simulation.
+- Names must be URL-encoded (`%20` for a space), at most 120 characters. Anything malformed, repeated, unknown or out of range is refused.
+- `teleport` and `pin` work as before, with no key.
+
+**The key.** Put a secret in `/var/jb/var/locate-ipad/locus.key` (first line, surrounding whitespace ignored) and pass it as `key=`. If the file is missing, unreadable or empty, remote control is off; a wrong key is ignored. Either way nothing moves and the reason lands in `lastCommand` below. The key is compared in constant time and never logged.
+
+**State files**, rewritten atomically (temp file, then rename) in `/var/jb/var/locate-ipad/`, silently skipped if the directory isn't there:
+
+- `locus-state.json` — `ts`, `engine` (`direct`/`tunnel`), `status` (`idle`/`connecting`/`active`/`reconnecting`/`dropped`), `simulating`, `mode` (`idle`/`teleport`/`route`/`joystick`), `position` (`{lat,lon}`, WGS-84 as sent to the engine), `route` (`{name,progressPct,paused}`), `speedKmh`, `loop`, `timeScale`, `profile`, `tunnel` (`direct`/`up`/`down`/`n/a`), `lastCommand` (`{name,ts,ok,error}`), `error`, `version`. Unset fields are `null`. Written on every change (position at most once a second) and at least every 5 seconds while the app is running.
+- `locus-routes.json` — the saved routes: `id`, `name`, `journey`, `distanceM`, `timesDriven`, `lastDriven` (epoch seconds or `null`). Rewritten at launch and whenever the list changes.
+
+**Limits.** iOS delivers a URL to the app only when it is opened, so `uiopen` brings Locus to the foreground and the device has to be unlocked; there is no way to send a command to a suspended app. A drive keeps running once the app is backgrounded (it holds the background location session), but the state files only update while the app process is alive. The repo targets iOS 17.0 and later; this has only been written against that, not tested on any particular version.
+
 ### The tunnel
 
 Reaching that service needs a loopback tunnel — an interface the phone can talk to *itself* on at `10.7.0.1`. Locus ships one as a packet-tunnel extension, so setup is a single **Turn on the tunnel** button and iOS' one-time VPN approval. Nothing leaves the device: the tunnel forwards no traffic anywhere.

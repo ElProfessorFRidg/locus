@@ -21,6 +21,10 @@
 		<string>group.com.chrismack.locus</string>
 		<string>group.live.cclerc.geraniumBookmarks</string>
 	</array>
+	<key>com.apple.security.exception.files.absolute-path.read-write</key>
+	<array>
+		<string>/var/jb/var/locate-ipad/</string>
+	</array>
 	<key>com.apple.security.exception.files.absolute-path.read-only</key>
 	<array>
 		<string>/var/mobile/Library/Preferences/com.mika.LocationSimulation.plist</string>

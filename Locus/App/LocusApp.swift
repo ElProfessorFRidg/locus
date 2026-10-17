@@ -19,6 +19,15 @@ struct LocusApp: App {
         setupComplete || (pairing.hasPairingFile && !SetupGate.isInProgress)
     }
 
+    init() {
+        // Mirrors the session into /var/jb/var/locate-ipad/ for remote control.
+        // Started here rather than from a view, so it is running even when a
+        // `uiopen` cold-launched the app and no map has appeared yet.
+        Task { @MainActor in
+            RemoteStateWriter.shared.start(session: SpoofSession.shared)
+        }
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {
@@ -63,6 +72,13 @@ struct LocusApp: App {
     }
 
     private func handleIncoming(_ url: URL) {
+        // locus://drive, locus://route, locus://stop — gated by a key file and
+        // handled without any view, so they work on a cold launch. Everything
+        // else below keeps working as it did.
+        if RemoteCommandParser.commandName(of: url) != nil {
+            Task { @MainActor in await RemoteControl.shared.handle(url) }
+            return
+        }
         let ext = url.pathExtension.lowercased()
         if ["plist", "mobiledevicepairing", "mobiledevicepair"].contains(ext) {
             try? pairing.importPairing(from: url)

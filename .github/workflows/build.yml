@@ -228,6 +228,11 @@ jobs:
           ldid -e "$APP/Locus" > tipa/entitlements.plist
           [[ "$(/usr/libexec/PlistBuddy -c "Print :com.apple.locationd.simulation" tipa/entitlements.plist)" == "true" ]] \
             || { echo "::error::Locus.tipa is missing com.apple.locationd.simulation"; exit 1; }
+          # Remote control (locus://drive, …) reads its key from, and writes its
+          # state to, /var/jb/var/locate-ipad/. Without this sandbox exception
+          # the app would run fine and silently never see the key file.
+          RW=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.exception.files.absolute-path.read-write" tipa/entitlements.plist)
+          grep -qF "/var/jb/var/locate-ipad/" <<< "$RW"             || { echo "::error::Locus.tipa is missing the read-write exception for /var/jb/var/locate-ipad/"; exit 1; }
           echo "Signed with:"; cat tipa/entitlements.plist
 
           # Every binary signed, not just the one checked above — an unsigned
@@ -307,6 +312,10 @@ jobs:
             LISTING=$(dpkg-deb -c "Locus-$FLAVOUR.deb")
             grep -q "\./$APPS/Locus.app/Locus$" <<< "$LISTING" \
               || { echo "::error::Locus-$FLAVOUR.deb doesn't put Locus.app in /$APPS"; exit 1; }
+            # The binary that ended up in the package, not the one that was signed.
+            ldid -e "$ROOT/$APPS/Locus.app/Locus" > "$ROOT.entitlements.plist"
+            DEB_RW=$(/usr/libexec/PlistBuddy -c "Print :com.apple.security.exception.files.absolute-path.read-write" "$ROOT.entitlements.plist")
+            grep -qF "/var/jb/var/locate-ipad/" <<< "$DEB_RW"               || { echo "::error::Locus-$FLAVOUR.deb lacks the /var/jb/var/locate-ipad/ read-write exception"; exit 1; }
             echo "Locus-$FLAVOUR.deb:"; dpkg-deb -I "Locus-$FLAVOUR.deb"
           done
           ls -lh Locus-*.deb

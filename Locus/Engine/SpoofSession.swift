@@ -145,7 +145,14 @@ final class SpoofSession: ObservableObject {
     /// Kept so the summary can report wall-clock time, which is not the same as
     /// simulated time whenever the scale isn't 1×.
     private var routeStartedAt: Date?
-    private var lastRouteName = "Route"
+    private(set) var lastRouteName = "Route"
+    /// What a remote drive (`locus://drive`) put in place for the length of one
+    /// drive, and what to put back afterwards. See `startRoute`.
+    private struct TransientDrive {
+        var previousOverride: DriveProfile?
+        var previousMode: TravelMode
+    }
+    private var transientDrive: TransientDrive?
 
     private var resendTimer: Timer?
     private var healthTimer: Timer?
@@ -680,7 +687,13 @@ final class SpoofSession: ObservableObject {
         // an interrupted "As recorded" drive came back at a generic pace.
         recordedTimes: [Date]? = nil,
         startingAt startDistance: CLLocationDistance = 0,
-        roads: [RoadSegment] = []
+        roads: [RoadSegment] = [],
+        // For a drive started from outside (`locus://drive`): parameters to use
+        // for this drive only. They go in as `profileOverride` / `travelMode`
+        // and come out again when the drive ends or is cancelled, so the named
+        // profiles and the mode picker are never rewritten.
+        transientProfile: DriveProfile? = nil,
+        transientMode: TravelMode? = nil
     ) {
         guard isReady(pairing) else { return }
         guard coordinates.count >= 2 else {
@@ -694,8 +707,8 @@ final class SpoofSession: ObservableObject {
         // started would only go stale and mislead.
         places.clear()
 
-        let profile = activeProfile
-        let mode = travelMode
+        let profile = transientProfile ?? activeProfile
+        let mode = transientMode ?? travelMode
         let basePlan = RouteSimulator.plan(
             coordinates: coordinates,
             profile: profile,
@@ -708,6 +721,15 @@ final class SpoofSession: ObservableObject {
         guard !basePlan.isEmpty else {
             lastError = "That route is too short to drive."
             return
+        }
+
+        // Only now that the plan is known to be playable, so a refusal above
+        // leaves nothing to undo. `cancelRoute` above already ended any earlier
+        // transient drive.
+        if transientProfile != nil || transientMode != nil {
+            transientDrive = TransientDrive(previousOverride: profileOverride, previousMode: travelMode)
+            if let transientProfile { profileOverride = transientProfile }
+            if let transientMode { travelMode = transientMode }
         }
 
         isRoutePaused = false
@@ -783,6 +805,7 @@ final class SpoofSession: ObservableObject {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
         routeStartedAt = nil
+        endTransientDrive()
 
         routeTask = nil
         telemetry = nil
@@ -793,6 +816,14 @@ final class SpoofSession: ObservableObject {
         routeStore.clearResume()
         refreshIdleTimer()
         settleMotion()
+    }
+
+    /// Puts back what `startRoute(transientProfile:transientMode:)` swapped out.
+    private func endTransientDrive() {
+        guard let transient = transientDrive else { return }
+        transientDrive = nil
+        profileOverride = transient.previousOverride
+        travelMode = transient.previousMode
     }
 
     func pauseRoute() { isRoutePaused = true }
@@ -820,6 +851,7 @@ final class SpoofSession: ObservableObject {
         routeGeneration += 1
         routeTask?.cancel()
         routeTask = nil
+        endTransientDrive()
         telemetry = nil
         isRoutePaused = false
         routeCountdown = nil
