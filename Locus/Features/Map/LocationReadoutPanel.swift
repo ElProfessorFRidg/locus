@@ -18,44 +18,23 @@ struct LocationReadoutPanel: View {
     var body: some View {
         let badge = readout.badge(session: session)
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                Text(badge.rawValue)
-                    .font(.system(.subheadline, design: .rounded).weight(.heavy))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 3)
-                    .background(color(for: badge), in: Capsule())
-                    .foregroundStyle(.black)
-                Spacer(minLength: 4)
-                if let source {
-                    Text(source)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            // Badge and coordinates share a row when they fit, and stack when
+            // they don't (an iPhone in portrait); nothing here may overlap.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    badgeView(badge)
+                    coordinateButton
+                    Spacer(minLength: 4)
+                    sourceView
                 }
-            }
-
-            if let shown {
-                Button {
-                    UIPasteboard.general.string = ReadoutVerdict.coordinateText(shown)
-                    copied = true
-                    Task {
-                        try? await Task.sleep(nanoseconds: 1_200_000_000)
-                        copied = false
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        badgeView(badge)
+                        Spacer(minLength: 4)
+                        sourceView
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(ReadoutVerdict.coordinateText(shown))
-                            .font(.system(.callout, design: .monospaced).weight(.semibold))
-                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+                    coordinateButton
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Copy coordinates")
-            } else {
-                Text("No fix yet")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
 
             if let details {
@@ -68,19 +47,26 @@ struct LocationReadoutPanel: View {
                 Text(note.prefix(1).uppercased() + note.dropFirst())
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(LocusTheme.statusWarn)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let comparison {
                 Text(comparison)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
+            // Only for a while: a stale "✗" from half an hour ago is noise.
             if let command = remote.lastCommand {
-                Text(commandText(command))
-                    .font(.caption2)
-                    .foregroundStyle(command.ok ? Color.secondary : LocusTheme.statusBad)
-                    .lineLimit(2)
+                TimelineView(.periodic(from: .now, by: 5)) { timeline in
+                    if timeline.date.timeIntervalSince1970 - TimeInterval(command.ts) < Self.commandLifetime {
+                        Text(commandText(command))
+                            .font(.caption2)
+                            .foregroundStyle(command.ok ? Color.secondary : LocusTheme.statusBad)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -89,6 +75,57 @@ struct LocationReadoutPanel: View {
         .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onAppear { probe.start() }
         .onDisappear { probe.stop() }
+    }
+
+    private static let commandLifetime: TimeInterval = 30
+
+    private func badgeView(_ badge: ReadoutBadge) -> some View {
+        Text(badge.rawValue)
+            .font(.system(.subheadline, design: .rounded).weight(.heavy))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(color(for: badge), in: Capsule())
+            .foregroundStyle(.black)
+            .fixedSize()
+    }
+
+    @ViewBuilder
+    private var sourceView: some View {
+        if let source {
+            Text(source)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var coordinateButton: some View {
+        if let shown {
+            Button {
+                UIPasteboard.general.string = ReadoutVerdict.coordinateText(shown)
+                copied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    copied = false
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(ReadoutVerdict.coordinateText(shown))
+                        .font(.system(.callout, design: .monospaced).weight(.semibold))
+                        .fixedSize()
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Copy coordinates")
+        } else {
+            Text("No fix yet")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - What is shown

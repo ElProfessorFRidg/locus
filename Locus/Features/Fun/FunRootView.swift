@@ -48,14 +48,6 @@ struct FunRootView: View {
         ZStack(alignment: .bottom) {
             FunTheme.night.ignoresSafeArea()
 
-            VStack {
-                LocationReadoutPanel()
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-                Spacer()
-            }
-            .zIndex(1)
-
             Group {
                 switch tab {
                 case .spots:
@@ -113,6 +105,12 @@ struct FunRootView: View {
             }
         }
         .preferredColorScheme(.dark)
+        // Its own row above the content: never drawn over a title or a search field.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            LocationReadoutPanel()
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
+        }
         .animation(.snappy(duration: 0.25), value: session.toast)
         .animation(.snappy(duration: 0.22), value: tab)
         // Fun mode drives with its own parameters and never writes to the

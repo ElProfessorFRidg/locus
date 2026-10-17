@@ -13,6 +13,7 @@ struct FunSpotsView: View {
     var onStuck: (TunnelBlocker) -> Void
 
     @EnvironmentObject private var session: SpoofSession
+    @ObservedObject private var probe = LocationProbe.shared
     @EnvironmentObject private var pairing: PairingStore
 
     @StateObject private var search = PlaceSearchCompleter()
@@ -191,7 +192,11 @@ struct FunSpotsView: View {
 
     private var nowCard: some View {
         let faking = session.simulated
+        // With no pin and no real fix, show what iOS itself reports rather than
+        // an endless "Looking…" — it may be a simulated fix, and says so.
+        let reportedFix = (faking == nil && session.pin == nil && session.realCoordinate == nil) ? probe.reading : nil
         let coordinate = faking ?? session.pin ?? session.realCoordinate
+            ?? reportedFix.map { MapDatumMode.current.fromWGS84($0.coordinate) }
         let saved = coordinate.flatMap { spot(at: $0) }
 
         return VStack(spacing: 0) {
@@ -210,11 +215,11 @@ struct FunSpotsView: View {
 
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(faking == nil ? "Really here" : "Faking it")
+                    Text(reportedFix != nil ? "Reported by iOS (simulated?)" : (faking == nil ? "Really here" : "Faking it"))
                         .font(.system(size: 12, weight: .heavy, design: .rounded))
                         .tracking(1.1)
                         .foregroundStyle(faking == nil ? FunTheme.mist : FunTheme.punch)
-                    Text(title(for: coordinate, saved: saved))
+                    Text(reportedFix != nil ? "Reported by iOS" : title(for: coordinate, saved: saved))
                         .font(.fun(19, .heavy))
                         .foregroundStyle(FunTheme.ink)
                         .lineLimit(1)
