@@ -35,13 +35,18 @@ enum RemoteScreenshot {
         guard rendered.png.count <= maxBytes else { throw RemoteCommandError("screenshot is too large") }
 
         try? FileManager.default.createDirectory(
-            atPath: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755]
+            atPath: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o755, .protectionKey: FileProtectionType.none]
         )
         prune()
         let path = directory + (id.map { "\($0).png" } ?? "latest.png")
         let temporary = path + ".tmp"
         do {
-            try rendered.png.write(to: URL(fileURLWithPath: temporary))
+            // `.noFileProtection`: a remote screenshot is as likely to be asked
+            // for while the device is locked as not, and the default Data
+            // Protection class would otherwise make the file unreadable until
+            // the device has been unlocked once since boot.
+            try rendered.png.write(to: URL(fileURLWithPath: temporary), options: [.noFileProtection])
         } catch {
             throw RemoteCommandError("couldn’t write \(path)")
         }

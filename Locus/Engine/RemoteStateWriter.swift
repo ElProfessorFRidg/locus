@@ -219,12 +219,18 @@ final class RemoteStateWriter {
                 // One level down, made when missing.
                 let sub = directory + name[..<slash]
                 if !FileManager.default.fileExists(atPath: sub) {
-                    try? FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: false,
-                                                             attributes: [.posixPermissions: 0o755])
+                    try? FileManager.default.createDirectory(
+                        atPath: sub, withIntermediateDirectories: false,
+                        attributes: [.posixPermissions: 0o755, .protectionKey: FileProtectionType.none]
+                    )
                 }
             }
             do {
-                try data.write(to: URL(fileURLWithPath: temporary))
+                // `.noFileProtection`: these are read by a remote caller at any
+                // time, screen locked or not, and the state file is exactly the
+                // thing that should never go dark because the device hasn't
+                // been unlocked yet since a reboot.
+                try data.write(to: URL(fileURLWithPath: temporary), options: [.noFileProtection])
             } catch {
                 return
             }

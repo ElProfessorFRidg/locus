@@ -254,6 +254,15 @@ final class SpoofSession: ObservableObject {
             status = .active
             activeBackend = .direct
             timeZoneAnchor = record.coordinate
+            // So a launch that only re-adopts a stale record — no new fix sent,
+            // so `apply()` is never called — still holds an active background
+            // location session from the moment this object exists. Without it,
+            // a device launched headless (SBS "suspended" launch, locked
+            // screen) has no standing reason to be exempt from the ordinary
+            // background freeze, and a remote command minutes later can arrive
+            // to a process the OS already stopped scheduling. Authorization was
+            // already granted the first time this simulation was started.
+            locationKeeper.start()
         }
     }
 

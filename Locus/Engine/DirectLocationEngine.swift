@@ -73,15 +73,29 @@ enum DirectLocationEngine {
     /// Created lazily, on `queue`, and only ever touched there.
     private static var manager: NSObject?
 
+    /// How long `locationd` gets to answer before a call gives up on it.
+    ///
+    /// `perform(_:)` is a synchronous Objective-C message send, and the
+    /// selectors it sends are documented (by every other project that uses
+    /// this private API) as synchronous XPC round trips into `locationd`. If
+    /// `locationd` is ever slow to answer — observed right after installing a
+    /// fresh build, plausibly also while the daemon is busy around a lock/
+    /// unlock — nothing before this bounded the wait, so `apply()` sat on
+    /// `await send(...)` forever: `status` stuck at "connecting", `isBusy`
+    /// stuck `true`, no error anywhere. This does not unstick `queue` itself —
+    /// if the stuck call never returns, `queue` stays blocked and every later
+    /// call queued behind it times out in turn — but no caller hangs past it.
+    private static let commandTimeout: TimeInterval = 6
+
     // MARK: - Engine
 
     static func set(_ fix: Fix) async -> Result<Void, LocationEngineError> {
         guard isAvailable else { return .failure(.directUnavailable) }
         let location = makeLocation(fix)
-        return await withCheckedContinuation { continuation in
+        return await withTimeout(commandTimeout) { resume in
             queue.async {
                 guard let manager = currentManager() else {
-                    continuation.resume(returning: .failure(.directUnavailable))
+                    resume(.failure(.directUnavailable))
                     return
                 }
                 // The exact sequence Geranium, udevs' `locsim` and Xcode's own
@@ -94,7 +108,7 @@ enum DirectLocationEngine {
                 _ = manager.perform(Selectors.append, with: location)
                 _ = manager.perform(Selectors.flush)
                 _ = manager.perform(Selectors.start)
-                continuation.resume(returning: .success(()))
+                resume(.success(()))
             }
         }
     }
@@ -106,10 +120,11 @@ enum DirectLocationEngine {
     /// doesn't stick; the repeats cost nothing, so they simply happen here.
     static func clear() async -> Result<Void, LocationEngineError> {
         guard isAvailable else { return .failure(.directUnavailable) }
-        return await withCheckedContinuation { continuation in
+        // Three round trips plus two 150ms sleeps of slack on top of `set`'s own.
+        return await withTimeout(commandTimeout * 2) { resume in
             queue.async {
                 guard let manager = currentManager() else {
-                    continuation.resume(returning: .failure(.directUnavailable))
+                    resume(.failure(.directUnavailable))
                     return
                 }
                 for attempt in 0..<3 {
@@ -118,8 +133,43 @@ enum DirectLocationEngine {
                     _ = manager.perform(Selectors.clear)
                     _ = manager.perform(Selectors.flush)
                 }
-                continuation.resume(returning: .success(()))
+                resume(.success(()))
             }
+        }
+    }
+
+    /// Races `work` against a timeout, resuming with `.directTimedOut` if
+    /// `work` hasn't called its callback by then. The timeout runs on the
+    /// Swift concurrency clock, not on `queue` — so it fires even when `queue`
+    /// itself is the thing stuck.
+    private static func withTimeout(
+        _ seconds: TimeInterval,
+        _ work: @escaping (@escaping (Result<Void, LocationEngineError>) -> Void) -> Void
+    ) async -> Result<Void, LocationEngineError> {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            work { once.resume($0) }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                once.resume(.failure(.directTimedOut))
+            }
+        }
+    }
+
+    /// A `CheckedContinuation` resumed from two races at once must still only
+    /// resume once — a second `resume` is a crash, not a no-op.
+    private final class ResumeOnce {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Result<Void, LocationEngineError>, Never>?
+        init(_ continuation: CheckedContinuation<Result<Void, LocationEngineError>, Never>) {
+            self.continuation = continuation
+        }
+        func resume(_ value: Result<Void, LocationEngineError>) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: value)
         }
     }
 
