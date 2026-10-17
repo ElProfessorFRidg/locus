@@ -99,7 +99,7 @@ final class RemoteInbox {
                 failure = error.message
                 RemoteControl.shared.recordFailure(command, error.message)
             case .success(let parsed):
-                failure = await run(parsed.command)
+                failure = await run(parsed.command, inboxID: candidate.id)
             }
         } else {
             failure = "unreadable"
@@ -112,7 +112,8 @@ final class RemoteInbox {
             ok: failure == nil,
             error: failure,
             ts: Int(Date().timeIntervalSince1970),
-            state: RemoteStateWriter.shared.currentState()
+            state: RemoteStateWriter.shared.currentState(),
+            screenshot: failure == nil && command == "screenshot" ? RemoteControl.shared.lastScreenshot : nil
         )
         if let encoded = try? result.jsonData() {
             RemoteStateWriter.shared.persistResult(encoded, id: candidate.id)
@@ -121,11 +122,11 @@ final class RemoteInbox {
     }
 
     /// Runs the command and waits for it to settle, but not past the cap.
-    private func run(_ command: RemoteCommand) async -> String? {
+    private func run(_ command: RemoteCommand, inboxID: String) async -> String? {
         var finished = false
         var error: String?
         Task { @MainActor in
-            error = await RemoteControl.shared.perform(command)
+            error = await RemoteControl.shared.perform(command, inboxID: inboxID)
             finished = true
         }
         let deadline = Date().addingTimeInterval(Self.commandCap)

@@ -15,8 +15,13 @@ struct LocusApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     /// Map when setup finished, or when already paired outside this walkthrough.
+    ///
+    /// The direct engine has nothing to set up — no pairing file, no tunnel —
+    /// so it skips the walkthrough: a remote-controlled device that was never
+    /// opened by hand would otherwise sit on the welcome page, with no map.
     private var showMap: Bool {
         setupComplete || (pairing.hasPairingFile && !SetupGate.isInProgress)
+            || LocationBackend.current == .direct
     }
 
     init() {
@@ -28,6 +33,7 @@ struct LocusApp: App {
             // Commands dropped in the inbox directory. Started here for the same
             // reason: a background launch has no scene, no URL and no view.
             RemoteInbox.shared.start()
+            LocationReadout.shared.start(session: SpoofSession.shared)
         }
     }
 
@@ -56,6 +62,7 @@ struct LocusApp: App {
                 handleIncoming(url)
             }
             .onAppear {
+                session.resyncOnForeground()
                 if !setupComplete, pairing.hasPairingFile, !SetupGate.isInProgress {
                     SetupGate.markComplete()
                     setupComplete = true

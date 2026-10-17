@@ -48,6 +48,14 @@ struct FunRootView: View {
         ZStack(alignment: .bottom) {
             FunTheme.night.ignoresSafeArea()
 
+            VStack {
+                LocationReadoutPanel()
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                Spacer()
+            }
+            .zIndex(1)
+
             Group {
                 switch tab {
                 case .spots:

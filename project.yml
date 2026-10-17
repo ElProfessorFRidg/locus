@@ -137,6 +137,7 @@ targets:
       - path: Locus/Engine/RouteStorage.swift
       - path: Locus/Support/RemoteCommand.swift
       - path: Locus/Support/RemoteState.swift
+      - path: Locus/Support/LocationVerdict.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chrismack.locus.tests

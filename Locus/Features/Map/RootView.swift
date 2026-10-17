@@ -56,6 +56,8 @@ struct RootView: View {
                             .onTapGesture { session.dismissToast() }
                     }
 
+                    LocationReadoutPanel()
+
                     if proMode {
                         ProChip { showReadout = true }
                             .transition(.scale(scale: 0.85).combined(with: .opacity))

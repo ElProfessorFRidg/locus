@@ -80,6 +80,16 @@ final class SpoofSession: ObservableObject {
     @Published private(set) var toast: String?
     @Published var isBusy = false
     @Published var joystickActive = false
+    /// The last fix handed to the engine, in WGS-84 — what the readout panel
+    /// and `locus-state.json` show. Cleared when the simulation ends.
+    @Published private(set) var lastFix: SentFix?
+    /// Whether what is running was started by a remote command (URL or inbox)
+    /// rather than from the app's own controls. Set by `RemoteControl` right
+    /// after it starts something; reset by every start made here.
+    @Published var startedRemotely = false
+    /// Whether this launch has cleared a simulation itself, which is the one
+    /// moment `locationd` is certain to be reporting the real location.
+    private(set) var clearedSimulationThisLaunch = false
 
     @Published var favorites: [SavedPlace] = []
     @Published var recents: [SavedPlace] = []
@@ -334,6 +344,7 @@ final class SpoofSession: ObservableObject {
 
     func teleport(to coordinate: CLLocationCoordinate2D, pairing: PairingStore) {
         guard isReady(pairing) else { return }
+        startedRemotely = false
         setPin(coordinate)
         Task { [weak self] in
             guard let self else { return }
@@ -355,6 +366,7 @@ final class SpoofSession: ObservableObject {
     /// The same, awaited. For callers that report an outcome — the Siri intent
     /// shouldn't say "back to your real location" before it is.
     func stopAndWait(pairing: PairingStore) async {
+        startedRemotely = false
         // No settling here: a "stationary" fix sent on the way out could land
         // after the clear and put the location straight back.
         cancelRoute(settle: false)
@@ -391,6 +403,8 @@ final class SpoofSession: ObservableObject {
         case .success:
             let wasNetwork = engine == .tunnel && SpoofBackend.current.usesNetwork && simulated != nil
             simulated = nil
+            lastFix = nil
+            clearedSimulationThisLaunch = true
             status = .idle
             activeBackend = nil
             lastFixWasMoving = false
@@ -509,7 +523,32 @@ final class SpoofSession: ObservableObject {
         keeperPausedForBackground = true
     }
 
+    /// Re-reads what the direct engine left behind and asks Core Location what
+    /// it now reports, rather than trusting in-memory state: a headless run,
+    /// another launch or a crash can all have changed the location since this
+    /// object last looked. Called at launch and whenever the app comes forward.
+    func resyncOnForeground() {
+        guard LocationBackend.current == .direct else { return }
+        if activeBackend == nil, !isRouting, status == .idle,
+           let record = DirectSimulationRecord.load() {
+            simulated = record.coordinate
+            pin = record.coordinate
+            status = .active
+            activeBackend = .direct
+            timeZoneAnchor = record.coordinate
+            lastFix = SentFix(
+                lat: record.latitude, lon: record.longitude, altitude: nil, speed: nil, course: nil,
+                horizontalAccuracy: 5, timestamp: Date()
+            )
+        }
+        if activeBackend == .direct, simulated != nil, !isRouting, !joystickActive, directCheck != .checking {
+            directCheck = .notRun
+            checkDirectSimulation()
+        }
+    }
+
     func sceneWillEnterForeground() {
+        resyncOnForeground()
         guard keeperPausedForBackground else { return }
         keeperPausedForBackground = false
         locationKeeper.start()
@@ -566,6 +605,7 @@ final class SpoofSession: ObservableObject {
 
     func startJoystick(pairing: PairingStore) {
         guard isReady(pairing) else { return }
+        startedRemotely = false
         let start = simulated ?? pin ?? realCoordinate
         guard let start else {
             lastError = "Drop a pin or teleport somewhere before using the joystick."
@@ -696,6 +736,7 @@ final class SpoofSession: ObservableObject {
         transientMode: TravelMode? = nil
     ) {
         guard isReady(pairing) else { return }
+        startedRemotely = false
         guard coordinates.count >= 2 else {
             lastError = "Build or draw a route first."
             return
@@ -1254,6 +1295,18 @@ final class SpoofSession: ObservableObject {
         case .success:
             simulated = coordinate
             pin = coordinate
+            let wire = MapDatumMode.current.toWGS84(coordinate)
+            lastFix = SentFix(
+                lat: wire.latitude,
+                lon: wire.longitude,
+                altitude: engine == .direct ? DirectSimulationOptions.altitude : nil,
+                speed: engine == .direct ? motion?.speed : nil,
+                course: engine == .direct ? motion?.course : nil,
+                // What the direct engine tells locationd; the developer
+                // service takes a bare coordinate.
+                horizontalAccuracy: 5,
+                timestamp: Date()
+            )
             status = .active
             lastError = nil
             activeBackend = engine

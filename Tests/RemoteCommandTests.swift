@@ -138,6 +138,19 @@ final class RemoteCommandTests: XCTestCase {
         XCTAssertNil(RemoteCommandParser.key(in: URL(string: "locus://go?lat=1&lon=2")!))
     }
 
+    // MARK: screenshot
+
+    func testScreenshotGrammar() {
+        XCTAssertEqual(command("locus://screenshot?key=k"), .screenshot(scale: 1))
+        XCTAssertEqual(command("locus://screenshot?scale=2&key=k"), .screenshot(scale: 2))
+        XCTAssertEqual(RemoteCommand.screenshot(scale: 1).name, "screenshot")
+        XCTAssertEqual(RemoteCommandParser.commandName(of: URL(string: "locus://screenshot")!), "screenshot")
+        for bad in ["scale=3", "scale=0", "scale=1.5", "scale=x", "scale=", "scale=1&scale=2", "to=1,2"] {
+            XCTAssertNotNil(refusal("locus://screenshot?\(bad)&key=k"), bad)
+        }
+        XCTAssertNotNil(refusal("locus://screenshot"), "no key")
+    }
+
     func testStop() {
         XCTAssertEqual(command("locus://stop?key=k"), .stop)
         XCTAssertEqual(RemoteCommand.stop.name, "stop")
@@ -225,8 +238,10 @@ final class RemoteCommandTests: XCTestCase {
         XCTAssertEqual(Set(object.keys), [
             "ts", "engine", "status", "simulating", "mode", "position", "route", "speedKmh", "loop",
             "timeScale", "profile", "tunnel", "lastCommand", "error", "version",
+            "badge", "real", "reportedByCoreLocation",
         ])
-        for key in ["position", "route", "speedKmh", "loop", "timeScale", "profile", "lastCommand", "error"] {
+        for key in ["position", "route", "speedKmh", "loop", "timeScale", "profile", "lastCommand", "error",
+                    "real", "reportedByCoreLocation"] {
             XCTAssertTrue(object[key] is NSNull, "\(key) should be null")
         }
         XCTAssertEqual(object["ts"] as? Int, 1_760_000_000)

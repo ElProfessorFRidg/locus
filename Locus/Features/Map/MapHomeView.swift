@@ -57,9 +57,14 @@ struct MapHomeView: View {
         switch session.mapStyleIndex {
         case 1: return .hybrid(elevation: .realistic)
         case 2: return .imagery(elevation: .realistic)
-        default: return .standard(elevation: .realistic)
+        // Flat by default: the 3D realistic terrain is the heaviest thing MapKit
+        // draws, and on at least one device it left the map empty.
+        default: return .standard(elevation: .flat)
         }
     }
+
+    /// "Map tiles not loading?" — see `tileHint`.
+    @State private var showTileHint = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -145,6 +150,24 @@ struct MapHomeView: View {
             }
 
             topChrome
+
+            if showTileHint {
+                tileHint
+                    .padding(.horizontal, 16)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .transition(.opacity)
+            }
+        }
+        // MapKit won't say whether tiles arrived, so this can't know the map is
+        // blank — it just offers the way out, a while after the map appeared,
+        // for long enough to notice it, once per appearance.
+        .task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { showTileHint = true }
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation { showTileHint = false }
         }
         .onAppear {
             session.startLocationUpdates()
@@ -709,6 +732,20 @@ struct MapHomeView: View {
         }
         .locusGlass(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var tileHint: some View {
+        Button {
+            session.mapStyleIndex = (session.mapStyleIndex + 1) % 3
+            withAnimation { showTileHint = false }
+        } label: {
+            Label("Map tiles not loading? Tap to switch map style", systemImage: "square.3.layers.3d")
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private var mapChromeButtons: some View {

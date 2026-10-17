@@ -132,6 +132,23 @@ final class RemoteStateWriter {
             tunnel = "n/a"
         }
 
+        let probe = LocationProbe.shared.reading
+        let readout = LocationReadout.shared
+        let badge = readout.badge(session: session)
+        let reported = probe.map {
+            RemoteState.Reported(
+                lat: Self.round($0.coordinate.latitude, places: 7),
+                lon: Self.round($0.coordinate.longitude, places: 7),
+                accuracy: $0.horizontalAccuracy,
+                isSimulatedBySoftware: $0.isSimulatedBySoftware
+            )
+        }
+        let real = readout.lastReal.map {
+            RemoteState.RealFix(
+                lat: Self.round($0.lat, places: 7), lon: Self.round($0.lon, places: 7), accuracy: $0.accuracy
+            )
+        }
+
         return RemoteState(
             ts: Int(Date().timeIntervalSince1970),
             engine: direct ? "direct" : "tunnel",
@@ -147,7 +164,10 @@ final class RemoteStateWriter {
             tunnel: tunnel,
             lastCommand: RemoteControl.shared.lastCommand,
             error: session.lastError,
-            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+            badge: badge.rawValue,
+            real: real,
+            reportedByCoreLocation: reported
         )
     }
 

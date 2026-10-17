@@ -1,3 +1,4 @@
+import Combine
 import CoreLocation
 import Foundation
 
@@ -10,11 +11,16 @@ import Foundation
 /// The grammar and the key check are in `RemoteCommand.swift`, where they are
 /// tested. This file is the part that needs a device.
 @MainActor
-final class RemoteControl {
+final class RemoteControl: ObservableObject {
     static let shared = RemoteControl()
 
-    /// The outcome of the most recent command, for `locus-state.json`.
-    private(set) var lastCommand: RemoteState.LastCommand?
+    /// The outcome of the most recent command, for `locus-state.json` and the
+    /// readout panel.
+    @Published private(set) var lastCommand: RemoteState.LastCommand?
+    /// What the last `screenshot` produced; read by the inbox for its result.
+    private(set) var lastScreenshot: ScreenshotInfo?
+    /// The inbox id of the command being run, which names a screenshot's file.
+    private var currentInboxID: String?
 
     /// Commands run one at a time, in the order they arrived: two `uiopen`s in
     /// quick succession must not interleave their route building.
@@ -27,10 +33,12 @@ final class RemoteControl {
     /// Runs a command that has already been parsed and trusted (an inbox file),
     /// queued behind anything in flight. Returns the error, or `nil` on success,
     /// and records it as `lastCommand` either way.
-    func perform(_ command: RemoteCommand) async -> String? {
+    func perform(_ command: RemoteCommand, inboxID: String? = nil) async -> String? {
         var failure: String?
         await serialized { [weak self] in
             guard let self else { return }
+            self.currentInboxID = inboxID
+            self.lastScreenshot = nil
             do {
                 try await self.run(command)
             } catch let error as RemoteCommandError {
@@ -118,6 +126,7 @@ final class RemoteControl {
             // Nothing running is already the state asked for.
             guard session.isSpoofing || session.isRouting || session.joystickActive else { return }
             await session.stopAndWait(pairing: pairing)
+            session.startedRemotely = false
             if let error = session.lastError { throw RemoteCommandError(error) }
 
         case .go(let target):
@@ -128,6 +137,7 @@ final class RemoteControl {
                 to: CLLocationCoordinate2D(latitude: target.latitude, longitude: target.longitude),
                 pairing: pairing
             )
+            session.startedRemotely = true
             if case .failed(let reason) = await LocusIntentSupport.waitForTeleport(session: session) {
                 throw RemoteCommandError(reason)
             }
@@ -153,8 +163,12 @@ final class RemoteControl {
                 recordedTimes: built.recordedTimes,
                 roads: built.roads
             )
+            session.startedRemotely = true
             try await confirmStarted(session)
             session.routeStore.markDriven(saved.id)
+
+        case .screenshot(let scale):
+            lastScreenshot = try RemoteScreenshot.capture(id: currentInboxID, scale: scale)
 
         case .drive(let request):
             try await drive(request, session: session, pairing: pairing)
@@ -222,6 +236,7 @@ final class RemoteControl {
             transientProfile: transient,
             transientMode: request.mode
         )
+        session.startedRemotely = true
         try await confirmStarted(session)
     }
 

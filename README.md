@@ -231,11 +231,13 @@ locus://drive?to=<lat>,<lon>[&from=<lat>,<lon>][&mode=drive|walk|cycle][&profile
 locus://route?name=<saved route name>&key=<key>
 locus://stop?key=<key>
 locus://go?lat=<lat>&lon=<lon>&key=<key>
+locus://screenshot?[scale=1|2&]key=<key>
 ```
 
 - **drive** builds a MapKit route and plays it. `from` defaults to the simulated position, else the real one; coordinates are in the same space as `locus://teleport`. `mode` defaults to `drive`; `cycle` is the app's cycle mode (MapKit still routes it as a car). `profile` is the exact name (case-insensitive) of an existing driving profile — an unknown one is an error, not a fallback. `speed` is the playback time scale. `loop`: 0 stop at the end, 1 loop, 2 back and forth. Profile, speed, loop and mode apply to that drive only; saved profiles and the mode picker are left alone.
 - **route** plays the saved route with that name (case-insensitive; if several match, the most recently driven).
 - **go** teleports to the coordinates, like the Siri intent, without needing any screen to be showing (unlike `locus://teleport`, which only a mounted map handles). Same coordinate space as `teleport`; the result lands in `lastCommand` (`name: "go"`).
+- **screenshot** renders Locus' own window to `/var/jb/var/locate-ipad/screens/latest.png` (public API only: `drawHierarchy`, falling back to `layer.render`). It sees what Locus draws, not the rest of the screen, and needs Locus on screen: otherwise `lastCommand` says "Locus has no visible window; bring it to the front first". At most one per second; files older than 10 minutes are removed.
 - **stop** stops routes, joystick and simulation.
 - Names must be URL-encoded (`%20` for a space), at most 120 characters. Anything malformed, repeated, unknown or out of range is refused.
 - `teleport` and `pin` work as before, with no key (and need the map on screen).
@@ -263,6 +265,16 @@ The same validation as the URLs applies (`from`, `mode`, `profile`, `speed`, `lo
 ```
 
 It waits for the command to settle (teleport lands, route starts, stop completes) for at most 25 seconds. It needs no setup or pairing file when the direct engine is available. A drive started from a background launch relies on the background-location mode Locus already declares to keep the process running.
+
+**Screenshots from the inbox.** `{"id":"a1b2c3d8","cmd":"screenshot","args":{"scale":2}}` (`args` optional, `scale` 1 or 2, default 1) writes `/var/jb/var/locate-ipad/screens/<id>.png` and answers with the usual result fields plus `file`, `width`, `height` (pixels) and `mapMayBeBlank`:
+
+```
+{"id":"a1b2c3d8","cmd":"screenshot","ok":true,"error":null,"ts":1760000000,"state":{...},"file":"/var/jb/var/locate-ipad/screens/a1b2c3d8.png","width":1640,"height":2360,"mapMayBeBlank":false}
+```
+
+`mapMayBeBlank` is `true` when the map area came out almost entirely black, which is what map content that `drawHierarchy` can't capture looks like. The file is then still written as captured, not patched up.
+
+**What the map shows.** A panel above the controls says `SIMULATED`, `REAL`, `INTERRUPTED` or `MAYBE SIMULATED`, with the coordinates to six decimals (tap to copy), the source (teleport, route or joystick, and "remote command" when one started it), accuracy, altitude, speed, course, the time of the fix, the last remote command, and the last known real fix with its distance when they differ. On launch and whenever the app comes forward it re-reads the persisted direct-simulation record and asks Core Location what it reports. If Locus thinks it is idle but Core Location reports somewhere over 1 km from the last real fix (or flags the fix as simulated by software), it says "location may still be simulated by locationd" instead of "REAL". `locus-state.json` carries the same: `badge`, `real` (`{lat,lon,accuracy}`, the last fix known to be real, or `null`) and `reportedByCoreLocation` (`{lat,lon,accuracy,isSimulatedBySoftware}` or `null`).
 
 **Limits.** iOS delivers a URL to the app only when it is opened, so `uiopen` brings Locus to the foreground and the device has to be unlocked; there is no way to send a command to a suspended app. A drive keeps running once the app is backgrounded (it holds the background location session), but the state files only update while the app process is alive. The repo targets iOS 17.0 and later; this has only been written against that, not tested on any particular version.
 

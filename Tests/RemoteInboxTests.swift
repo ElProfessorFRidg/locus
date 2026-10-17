@@ -91,6 +91,29 @@ final class RemoteInboxTests: XCTestCase {
         }
     }
 
+    func testScreenshot() {
+        XCTAssertEqual(accepted(command("{}", cmd: "screenshot")), .screenshot(scale: 1))
+        XCTAssertEqual(accepted("{\"id\":\"\(id)\",\"cmd\":\"screenshot\"}"), .screenshot(scale: 1))
+        XCTAssertEqual(accepted(command("{\"scale\":2}", cmd: "screenshot")), .screenshot(scale: 2))
+        XCTAssertEqual(accepted(command("{\"scale\":1}", cmd: "screenshot")), .screenshot(scale: 1))
+        for args in ["{\"scale\":3}", "{\"scale\":0}", "{\"scale\":1.5}", "{\"scale\":true}",
+                     "{\"scale\":\"big\"}", "{\"width\":100}", "{\"key\":\"k\"}"] {
+            XCTAssertTrue(refused(command(args, cmd: "screenshot")), args)
+        }
+    }
+
+    func testScreenshotResultFieldsSitAtTheTopLevel() throws {
+        let info = ScreenshotInfo(file: "/var/jb/var/locate-ipad/screens/a1b2c3d4.png", width: 1640, height: 2360,
+                                  mapMayBeBlank: false)
+        let result = RemoteResult(id: id, cmd: "screenshot", ok: true, error: nil, ts: 5, state: nil, screenshot: info)
+        let object = try JSONSerialization.jsonObject(with: result.jsonData()) as! [String: Any]
+        XCTAssertEqual(object["file"] as? String, info.file)
+        XCTAssertEqual(object["width"] as? Int, 1640)
+        XCTAssertEqual(object["height"] as? Int, 2360)
+        XCTAssertEqual(object["mapMayBeBlank"] as? Bool, false)
+        XCTAssertEqual(object["ok"] as? Bool, true)
+    }
+
     func testRejectsStopWithArguments() {
         XCTAssertTrue(refused(command("{\"lat\":1}", cmd: "stop")))
     }

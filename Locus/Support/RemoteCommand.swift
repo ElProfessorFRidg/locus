@@ -36,6 +36,8 @@ enum RemoteCommand: Equatable {
     case stop
     /// Teleport, without needing a map on screen.
     case go(RemoteCoordinate)
+    /// Render Locus' own window to a PNG. `scale` is 1 or 2.
+    case screenshot(scale: Int)
 
     var name: String {
         switch self {
@@ -43,6 +45,7 @@ enum RemoteCommand: Equatable {
         case .route: return "route"
         case .stop: return "stop"
         case .go: return "go"
+        case .screenshot: return "screenshot"
         }
     }
 }
@@ -61,7 +64,7 @@ enum RemoteCommandParser {
     static let scheme = "locus"
     /// The commands that move (or stop) the phone, and so need the key. `teleport`
     /// and `pin` are not here: they keep their old behaviour untouched.
-    static let commandNames: Set<String> = ["drive", "route", "stop", "go"]
+    static let commandNames: Set<String> = ["drive", "route", "stop", "go", "screenshot"]
 
     static let maxNameLength = 120
     static let maxKeyLength = 256
@@ -72,6 +75,7 @@ enum RemoteCommandParser {
         "route": ["name", "key"],
         "stop": ["key"],
         "go": ["lat", "lon", "key"],
+        "screenshot": ["scale", "key"],
     ]
 
     /// The command a URL names, or `nil` when it is not one of ours.
@@ -135,6 +139,13 @@ enum RemoteCommandParser {
                 return .failure(RemoteCommandError("lat=/lon= out of range or not a number"))
             }
             return .success(.go(RemoteCoordinate(latitude: latitude, longitude: longitude)))
+
+        case "screenshot":
+            switch values["scale"] {
+            case nil, "1": return .success(.screenshot(scale: 1))
+            case "2": return .success(.screenshot(scale: 2))
+            default: return .failure(RemoteCommandError("scale must be 1 or 2"))
+            }
 
         case "route":
             guard let raw = values["name"] else {
@@ -207,7 +218,7 @@ enum RemoteCommandParser {
             switch name {
             case "to", "from": text = coordinateText(value)
             case "lat", "lon", "speed": text = numberText(value)
-            case "loop": text = integerText(value)
+            case "loop", "scale": text = integerText(value)
             default: text = value as? String
             }
             guard let text, !text.isEmpty else {
