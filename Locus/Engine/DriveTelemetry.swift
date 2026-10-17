@@ -17,4 +17,7 @@ struct DriveTelemetry: Equatable {
     /// 1 on the first pass, 2 on the way back, and so on.
     var lap: Int = 1
     var totalDistance: CLLocationDistance = 0
+    /// Simulated seconds left in this pass, from a dry run of the same plan.
+    /// `nil` when there wasn't one, and the ETA falls back to the current speed.
+    var timeRemaining: TimeInterval?
 }

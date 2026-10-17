@@ -108,6 +108,8 @@ Because it's an estimate, the route is **coloured by limit on the map** before y
 
 Before committing forty minutes to a route, the sheet says what driving it will involve: how many junctions the car will sit at, how long for in total, the band of speeds the plan permits, and how many bends are decided by the grip budget rather than the sign.
 
+**The time it quotes is the time the drive takes.** It isn't Apple's travel time (a real car in real traffic) or distance over an average: the sheet drives the route in advance with your profile — traffic, stops, bends, acceleration — and the drive then plays that same plan. Playback runs against the wall clock, so a slow round trip to the phone is caught up rather than added on, and the ETA in the HUD and on the Lock Screen counts down from the same dry run instead of guessing from the current speed.
+
 **Saved routes are a list you can pick from.** Each row draws the route's own outline — you recognise your commute's shape the way you recognise a signature — next to where it runs between, resolved once when it's saved. Past four routes the list gains a filter (matching the endpoint names as well as the route's name, so "office" finds the one you called "Monday") and an order: recently driven, most driven, or longest. Swipe a row right to drive it, left to rename, duplicate or delete.
 
 A **GPX with timestamps** can be replayed at the pace it was actually recorded at, stops included.

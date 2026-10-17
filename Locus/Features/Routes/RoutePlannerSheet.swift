@@ -555,26 +555,32 @@ struct RoutePlannerSheet: View {
     }
 
     /// How long the playback will actually take, which is not Apple's estimate
-    /// once traffic, stops and the time scale are in play.
+    /// once traffic, stops, corners and the time scale are in play.
+    ///
+    /// This used to be distance over an average speed, which knew nothing of
+    /// the stops, the bends or the time spent getting up to speed, and came
+    /// out at half the drive. It is now the drive itself, run in advance on the
+    /// same plan the drive will use.
     private var estimatedDurationSuffix: String {
-        guard let route = workspace.selectedRoute, route.distance > 0 else { return "" }
+        guard let driven = workspace.estimatedDriveTime, driven > 1 else { return "" }
         let profile = session.drive
-        let base: CLLocationSpeed = {
-            switch profile.speedSource {
-            case .fixed: return profile.fixedSpeedMetresPerSecond
-            case .travelMode: return session.travelMode.baseSpeed
-            case .roadLimit:
-                let observed = route.expectedSpeed ?? session.travelMode.baseSpeed
-                return observed * (1 + profile.speedToleranceClamped)
-            case .recorded:
-                // The recording's own average is exactly this estimate, and it
-                // is the one number here that isn't a guess.
-                return route.expectedSpeed ?? session.travelMode.baseSpeed
-            }
-        }()
-        let effective = max(0.5, base * profile.traffic.meanFactor)
-        let seconds = route.distance / effective / max(0.05, profile.timeScale)
-        return " · about " + DriveFormat.clock(seconds) + " to play"
+        let scale = profile.timeScaleClamped
+        let passes: Double = profile.endBehavior == .reverseOnce ? 2 : 1
+        let wall = driven * passes / scale + max(0, profile.startDelaySeconds)
+
+        var text = " · about " + DriveFormat.clock(wall)
+        text += scale == 1 ? " to drive" : " to play at " + String(format: "%.4g×", scale)
+        switch profile.endBehavior {
+        case .loop, .pingPong: text += " a lap"
+        case .stop, .reverseOnce: break
+        }
+        // Named, because the row above quotes Apple's figure and the two are
+        // not the same thing: Apple's is a real car, this is the simulation.
+        if let apple = workspace.selectedRoute?.expectedTravelTime, apple > 1,
+           abs(apple - driven) >= 60 {
+            text += " (Apple's estimate: " + DriveFormat.clock(apple) + ")"
+        }
+        return text
     }
 
     // MARK: - Resume

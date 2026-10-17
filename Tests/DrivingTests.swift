@@ -50,6 +50,17 @@ final class DrivingTests: XCTestCase {
         XCTAssertEqual(DriveFormat.eta(telemetry: telemetry, timeScale: 4), "0:25")
     }
 
+    /// With a dry run behind it the ETA is the plan's own, so it neither
+    /// swings with the speedometer nor vanishes while the car waits at a stop.
+    func testETAUsesThePlannedTimeWhenThereIsOne() {
+        var telemetry = DriveTelemetryStub.make()
+        telemetry.speed = 0
+        telemetry.distanceRemaining = 500
+        telemetry.timeRemaining = 120
+        XCTAssertEqual(DriveFormat.eta(telemetry: telemetry, timeScale: 1), "2:00")
+        XCTAssertEqual(DriveFormat.eta(telemetry: telemetry, timeScale: 4), "0:30")
+    }
+
     func testETAIsNilWhenStopped() {
         var telemetry = DriveTelemetryStub.make()
         telemetry.speed = 0
@@ -226,6 +237,105 @@ final class DrivingTests: XCTestCase {
         let back = plan.reversed()
         XCTAssertEqual(back.totalDistance, plan.totalDistance, accuracy: 1)
         XCTAssertFalse(back.isEmpty)
+    }
+
+    // MARK: Timing
+
+    private func steadyProfile() -> DriveProfile {
+        var profile = DriveProfile()
+        profile.speedSource = .fixed
+        profile.units = .kph
+        profile.fixedSpeed = 50
+        profile.speedCeiling = 130
+        profile.traffic = .none
+        profile.stopAtJunctions = false
+        profile.waypointDwellSeconds = 0
+        profile.speedJitter = 0
+        profile.gpsNoiseMetres = 0
+        return profile
+    }
+
+    /// The time quoted before a drive is the time the drive takes. Without
+    /// traffic or stops the walker is deterministic, so the two must agree
+    /// to the step.
+    func testTheTimelineMatchesTheDrive() {
+        let profile = steadyProfile()
+        let path = (0..<300).map { Geo.offset(paris, east: 0, north: Double($0) * 10) }
+        let plan = RouteSimulator.plan(
+            coordinates: path, profile: profile, mode: .drive, routeExpectedSpeed: nil
+        )
+        let timeline = plan.timeline(profile: profile)
+
+        let walker = DriveWalker(plan: plan, profile: profile)
+        var last: DriveFix?
+        var steps = 0
+        while let fix = walker.step(dt: profile.updateInterval), steps < 10_000 {
+            last = fix
+            steps += 1
+        }
+        let driven = last?.elapsed ?? 0
+        XCTAssertGreaterThan(driven, 0)
+        XCTAssertEqual(timeline.total, driven, accuracy: max(2, driven * 0.02))
+        // Including the time spent getting up to speed and braking at the end,
+        // which distance over speed knew nothing of.
+        let naive = plan.totalDistance / SpeedUnit.kph.toMetresPerSecond(50)
+        XCTAssertGreaterThan(timeline.total, naive)
+    }
+
+    func testTimeRemainingRunsDownToZero() {
+        let profile = steadyProfile()
+        let path = (0..<200).map { Geo.offset(paris, east: Double($0) * 10, north: 0) }
+        let plan = RouteSimulator.plan(
+            coordinates: path, profile: profile, mode: .drive, routeExpectedSpeed: nil
+        )
+        let timeline = plan.timeline(profile: profile)
+
+        XCTAssertEqual(timeline.remaining(from: 0), timeline.total, accuracy: 0.001)
+        XCTAssertEqual(timeline.remaining(from: plan.totalDistance), 0, accuracy: 0.001)
+        var previous = timeline.total
+        for metres in stride(from: 0.0, through: plan.totalDistance, by: 50) {
+            let left = timeline.remaining(from: metres)
+            XCTAssertLessThanOrEqual(left, previous + 0.001)
+            previous = left
+        }
+    }
+
+    /// A slow tick owes more driving, taken as several ordinary steps — the
+    /// same distance as stepping one at a time, so catching up can't change
+    /// where the car ends up.
+    func testAdvancingByLongerIsTheSameAsSteppingRepeatedly() {
+        let profile = steadyProfile()
+        let path = (0..<300).map { Geo.offset(paris, east: 0, north: Double($0) * 10) }
+        let plan = RouteSimulator.plan(
+            coordinates: path, profile: profile, mode: .drive, routeExpectedSpeed: nil
+        )
+
+        let stepped = DriveWalker(plan: plan, profile: profile)
+        var steppedFix: DriveFix?
+        for _ in 0..<30 { steppedFix = stepped.step(dt: 1) ?? steppedFix }
+
+        let advanced = DriveWalker(plan: plan, profile: profile)
+        var advancedFix: DriveFix?
+        for _ in 0..<10 { advancedFix = advanced.advance(by: 3, maxStep: 1) ?? advancedFix }
+
+        XCTAssertEqual(advancedFix?.elapsed ?? 0, 30, accuracy: 0.001)
+        XCTAssertEqual(
+            advancedFix?.distanceTravelled ?? 0,
+            steppedFix?.distanceTravelled ?? -1,
+            accuracy: 0.01
+        )
+    }
+
+    /// Owing nothing still has to produce a fix: `nil` means the route is over.
+    func testAdvancingByNothingIsNotTheEndOfTheRoute() {
+        let profile = steadyProfile()
+        let path = (0..<50).map { Geo.offset(paris, east: 0, north: Double($0) * 10) }
+        let plan = RouteSimulator.plan(
+            coordinates: path, profile: profile, mode: .drive, routeExpectedSpeed: nil
+        )
+        let walker = DriveWalker(plan: plan, profile: profile)
+        XCTAssertNotNil(walker.advance(by: 0, maxStep: 1))
+        XCTAssertFalse(walker.isFinished)
     }
 
     // MARK: Stretches

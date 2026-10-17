@@ -219,6 +219,109 @@ struct RoutePlan {
     }
 }
 
+// MARK: - Timing
+
+/// How long the vehicle model takes over a plan, point by point.
+///
+/// Apple's expected travel time is for a real car in real traffic. The drive
+/// is this model — its own traffic, junction stops, corners and acceleration —
+/// and the two disagreed by half again, so a route quoted at 10 minutes took
+/// 15 to play. The only estimate that matches the drive is the drive: this
+/// runs the walker over the plan, several times because traffic is a random
+/// walk and one run is a single draw of it, and keeps the average time at
+/// which each point is reached.
+struct DriveTimeline: Equatable {
+    /// Metres from the start, one per plan point.
+    let distances: [CLLocationDistance]
+    /// Simulated seconds to reach each point, averaged over the runs.
+    let arrivals: [TimeInterval]
+
+    /// Simulated seconds for the whole pass.
+    var total: TimeInterval { arrivals.last ?? 0 }
+
+    /// Simulated seconds to reach `distance` metres along.
+    func time(at distance: CLLocationDistance) -> TimeInterval {
+        guard let first = distances.first, let last = distances.last, distances.count == arrivals.count else {
+            return 0
+        }
+        if distance <= first { return arrivals[0] }
+        if distance >= last { return total }
+
+        var low = 0
+        var high = distances.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if distances[mid] <= distance { low = mid } else { high = mid - 1 }
+        }
+        let next = min(low + 1, distances.count - 1)
+        let span = distances[next] - distances[low]
+        guard span > 0.001 else { return arrivals[low] }
+        let t = (distance - distances[low]) / span
+        return arrivals[low] + (arrivals[next] - arrivals[low]) * t
+    }
+
+    /// Simulated seconds still to drive from `distance` metres along. A stop
+    /// being sat at counts in full: arriving at it is what `distance` says.
+    func remaining(from distance: CLLocationDistance) -> TimeInterval {
+        max(0, total - time(at: distance))
+    }
+}
+
+extension RoutePlan {
+    /// Drives this plan without publishing anything and reports how long it
+    /// took. See `DriveTimeline`.
+    ///
+    /// - Parameter runs: averaged draws of the traffic. Five is where the
+    ///   average stops moving by more than a few seconds on a half-hour route.
+    func timeline(profile: DriveProfile, runs: Int = 5) -> DriveTimeline {
+        guard points.count > 1 else {
+            return DriveTimeline(distances: points.map(\.distance), arrivals: points.map { _ in 0 })
+        }
+        let distances = points.map(\.distance)
+        // The drive steps at its fix rate; half a second is as fine as the
+        // estimate needs and keeps a two-hour route cheap to run five times.
+        let dt = max(profile.updateInterval, 0.5)
+        let runs = max(1, runs)
+        var sums = [TimeInterval](repeating: 0, count: points.count)
+
+        for _ in 0..<runs {
+            let walker = DriveWalker(plan: self, profile: profile)
+            var arrivals = [TimeInterval](repeating: 0, count: points.count)
+            var next = 1
+            var lastDistance: CLLocationDistance = 0
+            var lastTime: TimeInterval = 0
+            // Generous, and only there so a plan that somehow can't be driven
+            // can't hang the planner: 50 hours at the coarsest step.
+            var budget = 360_000
+
+            while next < points.count, budget > 0, let fix = walker.step(dt: dt) {
+                budget -= 1
+                let here = fix.distanceTravelled
+                while next < points.count, distances[next] <= here {
+                    let span = here - lastDistance
+                    let t = span > 0.001 ? (distances[next] - lastDistance) / span : 1
+                    arrivals[next] = lastTime + (fix.elapsed - lastTime) * t.clamped(to: 0...1)
+                    next += 1
+                }
+                lastDistance = here
+                lastTime = fix.elapsed
+            }
+            // Only reached if the budget ran out: carry on at walking pace
+            // rather than report the rest of the route as instantaneous.
+            while next < points.count {
+                arrivals[next] = arrivals[next - 1] + (distances[next] - distances[next - 1]) / 1.4
+                next += 1
+            }
+            for index in sums.indices { sums[index] += arrivals[index] }
+        }
+
+        return DriveTimeline(
+            distances: distances,
+            arrivals: sums.map { $0 / Double(runs) }
+        )
+    }
+}
+
 // MARK: - Builder
 
 enum RouteSimulator {
@@ -773,6 +876,30 @@ final class DriveWalker {
             index: indexBefore(distance: distance),
             stopped: speed < 0.3
         )
+    }
+
+    /// Advances by `seconds` of simulated time in steps no longer than
+    /// `maxStep`, and returns the last fix — or `nil` once the route is done.
+    ///
+    /// The drive pays simulated time out against the wall clock, so one tick
+    /// can owe more than one step's worth: a slow round trip to the device, or
+    /// a timer iOS fired late. Taking it as several ordinary steps keeps the
+    /// braking look-ahead working at the resolution it was tuned for, where a
+    /// single long step could sail past a stop it should have braked for.
+    func advance(by seconds: TimeInterval, maxStep: TimeInterval) -> DriveFix? {
+        guard !isFinished, !plan.isEmpty else { return nil }
+        let maxStep = max(0.01, maxStep)
+        // Never zero: a tick that owes nothing still has to return a fix, or
+        // the caller reads `nil` as the end of the route.
+        var left = max(0.01, seconds)
+        var last: DriveFix?
+        while left > 0.000_1, !isFinished {
+            let chunk = min(maxStep, left)
+            guard let fix = step(dt: chunk) else { break }
+            last = fix
+            left -= chunk
+        }
+        return last
     }
 
     // MARK: Controller pieces

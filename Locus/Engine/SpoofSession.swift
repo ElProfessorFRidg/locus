@@ -680,7 +680,12 @@ final class SpoofSession: ObservableObject {
         // an interrupted "As recorded" drive came back at a generic pace.
         recordedTimes: [Date]? = nil,
         startingAt startDistance: CLLocationDistance = 0,
-        roads: [RoadSegment] = []
+        roads: [RoadSegment] = [],
+        // The plan the route sheet previewed, when it is still for this path,
+        // profile and mode. Driving that one rather than planning afresh is
+        // what makes the sheet's stops and its time the drive's: junction
+        // stops are a dice roll, and a second roll is a different route.
+        plan previewed: RoutePlan? = nil
     ) {
         guard isReady(pairing) else { return }
         guard coordinates.count >= 2 else {
@@ -696,7 +701,7 @@ final class SpoofSession: ObservableObject {
 
         let profile = activeProfile
         let mode = travelMode
-        let basePlan = RouteSimulator.plan(
+        let basePlan = previewed ?? RouteSimulator.plan(
             coordinates: coordinates,
             profile: profile,
             mode: mode,
@@ -874,6 +879,7 @@ final class SpoofSession: ObservableObject {
         startDistance: CLLocationDistance
     ) async {
         let dt = profile.updateInterval
+        let clock = ContinuousClock()
 
         var current = plan
         var lap = 1
@@ -882,14 +888,20 @@ final class SpoofSession: ObservableObject {
 
         while !Task.isCancelled {
             let walker = DriveWalker(plan: current, profile: profile, startDistance: offset)
+            // Per pass: the way back is a reversed plan with its own timing.
+            let timeline = current.timeline(profile: profile)
             offset = 0
 
-            while !Task.isCancelled, let fix = walker.step(dt: dt) {
-                while isRoutePaused, !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                }
-                guard !Task.isCancelled else { return }
+            // Simulated time is paid out against the wall clock, not a fixed
+            // `dt` per tick. Each tick used to advance the car by `dt` and then
+            // sleep `dt` — on top of the round trip to the device and whatever
+            // else the tick did — so a second of driving took well over a
+            // second, and a route the sheet quoted at 10 minutes took 15 or 20.
+            // Now a slow tick owes more driving, and the next one pays it.
+            var tickStart = clock.now
+            var owed = dt
 
+            while !Task.isCancelled, let fix = walker.advance(by: owed, maxStep: dt) {
                 // Read from the live profile rather than the snapshot taken at
                 // the start: the time scale is the one dial worth moving while
                 // watching a drive, and it used to do nothing until the route
@@ -918,7 +930,8 @@ final class SpoofSession: ObservableObject {
                     isStopped: fix.isStopped,
                     isOverLimit: fix.isOverLimit,
                     lap: lap,
-                    totalDistance: walker.totalDistance
+                    totalDistance: walker.totalDistance,
+                    timeRemaining: timeline.remaining(from: fix.distanceTravelled)
                 )
 
                 if fix.isOverLimit != wasOverLimit {
@@ -952,7 +965,28 @@ final class SpoofSession: ObservableObject {
                     routeStore.recordProgress(state)
                 }
 
-                try? await Task.sleep(nanoseconds: UInt64((dt / scale) * 1_000_000_000))
+                // Whatever is left of this tick's interval, rather than the
+                // whole of it again after the work above.
+                try? await Task.sleep(until: tickStart.advanced(by: .seconds(dt / scale)), clock: .continuous)
+
+                // A pause is not driving time: start the next tick's clock
+                // when it ends, so the car doesn't leap ahead on resume.
+                if isRoutePaused {
+                    while isRoutePaused, !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                    }
+                    tickStart = clock.now
+                    owed = dt
+                    continue
+                }
+
+                let now = clock.now
+                let wall = Self.seconds(now - tickStart)
+                tickStart = now
+                // Capped: a few seconds of hitch is caught up, but an app
+                // iOS froze for minutes would otherwise come back with the
+                // car teleporting kilometres down the road.
+                owed = min(wall, 5) * drive.timeScaleClamped
             }
 
             guard !Task.isCancelled else { return }
@@ -976,6 +1010,11 @@ final class SpoofSession: ObservableObject {
                 continue
             }
         }
+    }
+
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        let parts = duration.components
+        return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
     }
 
     /// Formats telemetry for the Live Activity.
